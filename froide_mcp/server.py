@@ -1,4 +1,4 @@
-"""Main entry point: mounts FastMCP SSE app and Google OAuth2 auth routes.
+"""Main entry point: mounts FastMCP HTTP app and Google OAuth2 auth routes.
 
 All requests to /mcp/* MUST carry a valid X-Froide-Session header obtained
 via the Google SSO flow at /auth/login.  The RequireSessionMiddleware
@@ -8,7 +8,7 @@ about missing tokens.
 from __future__ import annotations
 
 import secrets
-from typing import Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable
 
 import uvicorn
 from starlette.applications import Starlette
@@ -32,6 +32,7 @@ from froide_mcp.tools import mcp  # registers all @mcp.tool() decorators
 
 
 # ── Middleware: enforce Google SSO on every /mcp/* request ────────────────
+
 
 class RequireSessionMiddleware(BaseHTTPMiddleware):
     """Block any /mcp/* request that lacks a valid, non-expired session token.
@@ -60,8 +61,10 @@ class RequireSessionMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(
                     {
                         "error": "Unauthenticated",
-                        "detail": "Visit /auth/login to authenticate with Google SSO, "
-                                  "then include the returned token as X-Froide-Session header.",
+                        "detail": (
+                            "Visit /auth/login to authenticate with Google SSO, "
+                            "then include the returned token as X-Froide-Session header."
+                        ),
                     },
                     status_code=401,
                 )
@@ -76,7 +79,8 @@ class RequireSessionMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-# ── Auth routes ───────────────────────────────────────────────────────────
+# ── Auth routes ──────────────────────────────────────────────────
+
 
 async def login(request: Request) -> Response:
     """Redirect the user to Google for authentication."""
@@ -132,14 +136,15 @@ auth_routes = [
     Route("/healthz", healthz),
 ]
 
-mcp_app = mcp.sse_app()
+# fastmcp 3.x: http_app() replaces the removed sse_app()
+mcp_app = mcp.http_app()
 
 app = Starlette(
     routes=auth_routes,
     middleware=[Middleware(RequireSessionMiddleware)],
 )
 
-# Mount FastMCP SSE at /mcp
+# Mount FastMCP HTTP transport at /mcp
 app.mount("/mcp", mcp_app)
 
 

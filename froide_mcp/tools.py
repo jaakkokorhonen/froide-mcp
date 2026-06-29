@@ -7,9 +7,11 @@ bearer token from the already-validated session.
 from __future__ import annotations
 
 from typing import Any
-from fastmcp import FastMCP, Context
-from froide_mcp.client import FroideClient
+
+from fastmcp import Context, FastMCP
+
 from froide_mcp.auth import decode_session_token
+from froide_mcp.client import FroideClient
 
 mcp: FastMCP = FastMCP("froide")
 
@@ -20,7 +22,12 @@ def _token_from_ctx(ctx: Context) -> str:
     The token is guaranteed to be valid here because RequireSessionMiddleware
     already rejected any request with a missing or expired session token.
     """
-    raw: str = ctx.request_context.request.headers.get("x-froide-session", "")
+    rc = ctx.request_context
+    raw: str = (
+        rc.request.headers.get("x-froide-session", "")
+        if rc is not None and rc.request is not None
+        else ""
+    )
     if not raw:
         # Should never reach this branch — middleware guards the /mcp prefix.
         raise PermissionError(
@@ -30,6 +37,7 @@ def _token_from_ctx(ctx: Context) -> str:
 
 
 # ── FOI Requests ──────────────────────────────────────────────────────────
+
 
 @mcp.tool()
 async def list_requests(
@@ -141,6 +149,7 @@ async def set_request_status(
 
 # ── Public bodies ─────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 async def list_public_bodies(
     ctx: Context,
@@ -164,6 +173,7 @@ async def get_public_body(ctx: Context, public_body_id: int) -> dict[str, Any]:
 
 # ── Jurisdictions ─────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 async def list_jurisdictions(ctx: Context, page: int = 1) -> dict[str, Any]:
     """List all jurisdictions (e.g. national, regional) available in Froide."""
@@ -173,6 +183,7 @@ async def list_jurisdictions(ctx: Context, page: int = 1) -> dict[str, Any]:
 
 
 # ── Campaigns ─────────────────────────────────────────────────────────────
+
 
 @mcp.tool()
 async def list_campaigns(ctx: Context, page: int = 1) -> dict[str, Any]:
@@ -192,6 +203,7 @@ async def get_campaign(ctx: Context, campaign_id: int) -> dict[str, Any]:
 
 # ── Attachments ───────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 async def list_attachments(ctx: Context, request_id: int) -> dict[str, Any]:
     """List all attachments (documents) for a FOI request."""
@@ -201,6 +213,7 @@ async def list_attachments(ctx: Context, request_id: int) -> dict[str, Any]:
 
 
 # ── Laws ──────────────────────────────────────────────────────────────────
+
 
 @mcp.tool()
 async def get_law(ctx: Context, law_id: int) -> dict[str, Any]:
@@ -223,6 +236,7 @@ async def list_laws(
 
 
 # ── User profile ──────────────────────────────────────────────────────────
+
 
 @mcp.tool()
 async def get_my_profile(ctx: Context) -> dict[str, Any]:

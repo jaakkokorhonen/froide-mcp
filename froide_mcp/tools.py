@@ -6,12 +6,12 @@ bearer token from the already-validated session.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any
 from fastmcp import FastMCP, Context
 from froide_mcp.client import FroideClient
 from froide_mcp.auth import decode_session_token
 
-mcp = FastMCP("froide")
+mcp: FastMCP = FastMCP("froide")
 
 
 def _token_from_ctx(ctx: Context) -> str:
@@ -20,13 +20,13 @@ def _token_from_ctx(ctx: Context) -> str:
     The token is guaranteed to be valid here because RequireSessionMiddleware
     already rejected any request with a missing or expired session token.
     """
-    raw = ctx.request_context.request.headers.get("x-froide-session", "")
+    raw: str = ctx.request_context.request.headers.get("x-froide-session", "")
     if not raw:
         # Should never reach this branch — middleware guards the /mcp prefix.
         raise PermissionError(
             "Missing X-Froide-Session header. Authenticate via Google SSO at /auth/login."
         )
-    return decode_session_token(raw)["froide_token"]
+    return decode_session_token(raw)["froide_token"]  # type: ignore[no-any-return]
 
 
 # ── FOI Requests ──────────────────────────────────────────────────────────
@@ -34,10 +34,10 @@ def _token_from_ctx(ctx: Context) -> str:
 @mcp.tool()
 async def list_requests(
     ctx: Context,
-    status: Optional[str] = None,
-    q: Optional[str] = None,
+    status: str | None = None,
+    q: str | None = None,
     page: int = 1,
-) -> dict:
+) -> dict[str, Any]:
     """List FOI requests. Filter by status (e.g. 'awaiting_response', 'successful') or search query.
 
     status options: awaiting_user_confirmation, publicbody_needed, awaiting_publicbody_confirmation,
@@ -51,7 +51,7 @@ async def list_requests(
 
 
 @mcp.tool()
-async def get_request(ctx: Context, request_id: int) -> dict:
+async def get_request(ctx: Context, request_id: int) -> dict[str, Any]:
     """Get a single FOI request with all its messages and metadata."""
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
@@ -59,7 +59,7 @@ async def get_request(ctx: Context, request_id: int) -> dict:
 
 
 @mcp.tool()
-async def search_requests(ctx: Context, q: str, page: int = 1) -> dict:
+async def search_requests(ctx: Context, q: str, page: int = 1) -> dict[str, Any]:
     """Full-text search across FOI requests."""
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
@@ -72,10 +72,10 @@ async def make_request(
     public_body_id: int,
     subject: str,
     body: str,
-    law_id: Optional[int] = None,
-    campaign_id: Optional[int] = None,
+    law_id: int | None = None,
+    campaign_id: int | None = None,
     public: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """Submit a new FOI request to a public body.
 
     Args:
@@ -88,7 +88,7 @@ async def make_request(
         public: Whether the request should be publicly visible (default True).
     """
     token = _token_from_ctx(ctx)
-    payload: dict = {
+    payload: dict[str, Any] = {
         "publicbody": public_body_id,
         "subject": subject,
         "body": body,
@@ -107,11 +107,11 @@ async def send_followup(
     ctx: Context,
     request_id: int,
     message: str,
-    subject: Optional[str] = None,
-) -> dict:
+    subject: str | None = None,
+) -> dict[str, Any]:
     """Send a follow-up message on an existing FOI request."""
     token = _token_from_ctx(ctx)
-    body: dict = {"request": request_id, "message": message}
+    body: dict[str, Any] = {"request": request_id, "message": message}
     if subject:
         body["subject"] = subject
     async with FroideClient(token) as c:
@@ -123,8 +123,8 @@ async def set_request_status(
     ctx: Context,
     request_id: int,
     status: str,
-    resolution: Optional[str] = None,
-) -> dict:
+    resolution: str | None = None,
+) -> dict[str, Any]:
     """Update the status of a FOI request you own.
 
     status options: awaiting_response, awaiting_classification, successful,
@@ -132,7 +132,7 @@ async def set_request_status(
     resolution is an optional free-text explanation.
     """
     token = _token_from_ctx(ctx)
-    payload: dict = {"status": status}
+    payload: dict[str, Any] = {"status": status}
     if resolution:
         payload["resolution"] = resolution
     async with FroideClient(token) as c:
@@ -144,10 +144,10 @@ async def set_request_status(
 @mcp.tool()
 async def list_public_bodies(
     ctx: Context,
-    q: Optional[str] = None,
-    jurisdiction: Optional[int] = None,
+    q: str | None = None,
+    jurisdiction: int | None = None,
     page: int = 1,
-) -> dict:
+) -> dict[str, Any]:
     """List or search public bodies (authorities). Filter by name or jurisdiction ID."""
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
@@ -155,7 +155,7 @@ async def list_public_bodies(
 
 
 @mcp.tool()
-async def get_public_body(ctx: Context, public_body_id: int) -> dict:
+async def get_public_body(ctx: Context, public_body_id: int) -> dict[str, Any]:
     """Get detailed information about a single public body."""
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
@@ -165,7 +165,7 @@ async def get_public_body(ctx: Context, public_body_id: int) -> dict:
 # ── Jurisdictions ─────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def list_jurisdictions(ctx: Context, page: int = 1) -> dict:
+async def list_jurisdictions(ctx: Context, page: int = 1) -> dict[str, Any]:
     """List all jurisdictions (e.g. national, regional) available in Froide."""
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
@@ -175,7 +175,7 @@ async def list_jurisdictions(ctx: Context, page: int = 1) -> dict:
 # ── Campaigns ─────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def list_campaigns(ctx: Context, page: int = 1) -> dict:
+async def list_campaigns(ctx: Context, page: int = 1) -> dict[str, Any]:
     """List all FOI campaigns."""
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
@@ -183,7 +183,7 @@ async def list_campaigns(ctx: Context, page: int = 1) -> dict:
 
 
 @mcp.tool()
-async def get_campaign(ctx: Context, campaign_id: int) -> dict:
+async def get_campaign(ctx: Context, campaign_id: int) -> dict[str, Any]:
     """Get a single campaign including its description and participating public bodies."""
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
@@ -193,7 +193,7 @@ async def get_campaign(ctx: Context, campaign_id: int) -> dict:
 # ── Attachments ───────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def list_attachments(ctx: Context, request_id: int) -> dict:
+async def list_attachments(ctx: Context, request_id: int) -> dict[str, Any]:
     """List all attachments (documents) for a FOI request."""
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
@@ -203,7 +203,7 @@ async def list_attachments(ctx: Context, request_id: int) -> dict:
 # ── Laws ──────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def get_law(ctx: Context, law_id: int) -> dict:
+async def get_law(ctx: Context, law_id: int) -> dict[str, Any]:
     """Get information about a FOI law (e.g. which authorities it applies to)."""
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
@@ -213,9 +213,9 @@ async def get_law(ctx: Context, law_id: int) -> dict:
 @mcp.tool()
 async def list_laws(
     ctx: Context,
-    jurisdiction: Optional[int] = None,
+    jurisdiction: int | None = None,
     page: int = 1,
-) -> dict:
+) -> dict[str, Any]:
     """List FOI laws. Optionally filter by jurisdiction ID."""
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
@@ -225,7 +225,7 @@ async def list_laws(
 # ── User profile ──────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def get_my_profile(ctx: Context) -> dict:
+async def get_my_profile(ctx: Context) -> dict[str, Any]:
     """Get the authenticated user's Froide profile (name, email, request stats)."""
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:

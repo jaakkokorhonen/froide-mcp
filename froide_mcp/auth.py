@@ -15,6 +15,7 @@ import base64
 import hashlib
 import hmac
 import httpx
+from typing import Any
 from urllib.parse import urlencode
 
 from froide_mcp.config import config
@@ -44,7 +45,7 @@ def google_auth_url(state: str) -> str:
     return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
 
-def exchange_google_code(code: str) -> dict:
+def exchange_google_code(code: str) -> dict[str, Any]:
     """Exchange authorisation code for Google tokens. Returns the ID token claims.
 
     Note: this implementation decodes the JWT payload without verifying the
@@ -67,15 +68,15 @@ def exchange_google_code(code: str) -> dict:
     resp.raise_for_status()
     tokens = resp.json()
     # Decode JWT payload (base64url, middle segment)
-    id_token = tokens["id_token"]
+    id_token: str = tokens["id_token"]
     payload_b64 = id_token.split(".")[1]
     # Pad base64
     payload_b64 += "=" * (-len(payload_b64) % 4)
-    claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+    claims: dict[str, Any] = json.loads(base64.urlsafe_b64decode(payload_b64))
     return claims
 
 
-def verify_hd(claims: dict) -> None:
+def verify_hd(claims: dict[str, Any]) -> None:
     """Raise if the Google account domain doesn't match ALLOWED_HD."""
     if not config.allowed_hd:
         return
@@ -100,7 +101,8 @@ def get_froide_token() -> str:
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json()["access_token"]
+    token: str = resp.json()["access_token"]
+    return token
 
 
 # ── Signed session tokens ──────────────────────────────────────────────────
@@ -123,7 +125,7 @@ def create_session_token(email: str, froide_token: str) -> str:
     return f"{payload_b64.decode()}.{sig_b64.decode()}"
 
 
-def decode_session_token(token: str) -> dict:
+def decode_session_token(token: str) -> dict[str, Any]:
     """Verify and decode. Raises ValueError on invalid/expired token."""
     try:
         payload_b64_str, sig_b64_str = token.rsplit(".", 1)
@@ -133,7 +135,7 @@ def decode_session_token(token: str) -> dict:
     expected_sig = base64.urlsafe_b64encode(_sign(payload_b64))
     if not hmac.compare_digest(expected_sig, sig_b64_str.encode()):
         raise ValueError("Invalid token signature")
-    payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+    payload: dict[str, Any] = json.loads(base64.urlsafe_b64decode(payload_b64))
     if payload["exp"] < time.time():
         raise ValueError("Token expired")
     return payload

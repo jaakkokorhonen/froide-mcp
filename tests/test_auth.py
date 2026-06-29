@@ -1,40 +1,68 @@
-"""Unit tests for session token signing."""
-import os
+"""Unit tests: session token signing and Google OAuth2 helpers."""
+from __future__ import annotations
 import time
 import pytest
-
-os.environ.setdefault("FROIDE_BASE_URL", "http://localhost:8000")
-os.environ.setdefault("GOOGLE_CLIENT_ID", "test")
-os.environ.setdefault("GOOGLE_CLIENT_SECRET", "test")
-os.environ.setdefault("SESSION_SECRET", "a" * 64)
-os.environ.setdefault("ALLOWED_HD", "")
-os.environ.setdefault("FROIDE_CLIENT_ID", "test")
-os.environ.setdefault("FROIDE_CLIENT_SECRET", "test")
-os.environ.setdefault("MCP_BASE_URL", "http://localhost:8080")
-
-from froide_mcp.auth import create_session_token, decode_session_token
+from froide_mcp.auth import (
+    create_session_token,
+    decode_session_token,
+    google_auth_url,
+    verify_hd,
+)
 
 
-def test_roundtrip():
-    token = create_session_token(email="test@example.com", froide_token="abc123")
-    payload = decode_session_token(token)
-    assert payload["email"] == "test@example.com"
-    assert payload["froide_token"] == "abc123"
-    assert payload["exp"] > time.time()
+class TestSessionToken:
+    def test_roundtrip(self):
+        token = create_session_token(email="u@example.com", froide_token="tok")
+        p = decode_session_token(token)
+        assert p["email"] == "u@example.com"
+        assert p["froide_token"] == "tok"
+        assert p["exp"] > time.time()
+
+    def test_tampered_rejected(self):
+        token = create_session_token(email="u@example.com", froide_token="tok")
+        with pytest.raises(ValueError, match="Invalid token signature"):
+            decode_session_token(token[:-4] + "XXXX")
+
+    def test_malformed_rejected(self):
+        with pytest.raises(ValueError, match="Malformed"):
+            decode_session_token("notavalidtoken")
+
+    def test_expired_rejected(self, monkeypatch):
+        import froide_mcp.auth as auth_mod
+        monkeypatch.setattr(auth_mod, "TOKEN_TTL", -1)  # already expired
+        token = create_session_token(email="u@example.com", froide_token="tok")
+        with pytest.raises(ValueError, match="expired"):
+            decode_session_token(token)
 
 
-def test_tampered_token_rejected():
-    token = create_session_token(email="test@example.com", froide_token="abc123")
-    tampered = token[:-4] + "XXXX"
-    with pytest.raises(ValueError, match="Invalid token signature"):
-        decode_session_token(tampered)
+class TestGoogleHelpers:
+    def test_auth_url_contains_client_id(self):
+        url = google_auth_url(state="abc")
+        assert "test-google-client-id" in url
+        assert "response_type=code" in url
 
+    def test_auth_url_includes_hd_when_set(self, monkeypatch):
+        import froide_mcp.auth as auth_mod
+        from unittest.mock import patch
+        with patch.object(auth_mod.config, "allowed_hd", "company.fi"):
+            url = google_auth_url(state="s")
+        assert "hd=company.fi" in url
 
-def test_hd_verification():
-    from froide_mcp.auth import verify_hd
-    from unittest.mock import patch
-    with patch("froide_mcp.auth.config") as mock_cfg:
-        mock_cfg.allowed_hd = "company.fi"
-        with pytest.raises(PermissionError):
-            verify_hd({"hd": "other.com", "email": "user@other.com"})
-        verify_hd({"hd": "company.fi", "email": "user@company.fi"})  # should not raise
+    def test_verify_hd_passes_matching(self):
+        from unittest.mock import patch
+        import froide_mcp.auth as auth_mod
+        with patch.object(auth_mod.config, "allowed_hd", "company.fi"):
+            verify_hd({"hd": "company.fi"})  # must not raise
+
+    def test_verify_hd_rejects_other_domain(self):
+        from unittest.mock import patch
+        import froide_mcp.auth as auth_mod
+        with patch.object(auth_mod.config, "allowed_hd", "company.fi"):
+            with pytest.raises(PermissionError):
+                verify_hd({"hd": "evil.com"})
+
+    def test_verify_hd_skipped_when_empty(self):
+        from unittest.mock import patch
+        import froide_mcp.auth as auth_mod
+        with patch.object(auth_mod.config, "allowed_hd", ""):
+            verify_hd({"hd": "anyone.com"})  # must not raise

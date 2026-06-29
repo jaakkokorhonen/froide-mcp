@@ -1,0 +1,102 @@
+"""Main entry point: mounts FastMCP SSE app and Google OAuth2 auth routes."""
+from __future__ import annotations
+
+import secrets
+import uvicorn
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, RedirectResponse, JSONResponse
+from starlette.routing import Route
+
+from froide_mcp.auth import (
+    google_auth_url,
+    exchange_google_code,
+    verify_hd,
+    get_froide_token,
+    create_session_token,
+)
+from froide_mcp.config import config
+from froide_mcp.tools import mcp  # registers all @mcp.tool() decorators
+
+
+# ── Auth routes ───────────────────────────────────────────────────────────
+
+async def login(request: Request):
+    """Redirect the user to Google for authentication."""
+    state = secrets.token_urlsafe(16)
+    url = google_auth_url(state=state)
+    response = RedirectResponse(url)
+    response.set_cookie("oauth_state", state, httponly=True, samesite="lax", max_age=300)
+    return response
+
+
+async def callback(request: Request):
+    """Handle Google OAuth2 callback, issue a session token."""
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    stored_state = request.cookies.get("oauth_state")
+
+    if not code or state != stored_state:
+        return JSONResponse({"error": "Invalid OAuth2 callback"}, status_code=400)
+
+    try:
+        claims = exchange_google_code(code)
+        verify_hd(claims)
+        froide_token = get_froide_token()
+        session_token = create_session_token(
+            email=claims["email"],
+            froide_token=froide_token,
+        )
+    except PermissionError as e:
+        return JSONResponse({"error": str(e)}, status_code=403)
+    except Exception as e:
+        return JSONResponse({"error": f"Auth failed: {e}"}, status_code=500)
+
+    # Return the session token. The MCP client must include it as:
+    # X-Froide-Session: <token>
+    return HTMLResponse(
+        f"""<html><body>
+        <h2>Authenticated ✓</h2>
+        <p>Email: {claims['email']}</p>
+        <p>Include this header in all MCP requests:</p>
+        <pre>X-Froide-Session: {session_token}</pre>
+        <p>Token expires in 8 hours.</p>
+        </body></html>"""
+    )
+
+
+async def healthz(request: Request):
+    return JSONResponse({"status": "ok"})
+
+
+# ── Application assembly ──────────────────────────────────────────────────
+
+auth_routes = [
+    Route("/auth/login", login),
+    Route("/auth/callback", callback),
+    Route("/healthz", healthz),
+]
+
+# Mount FastMCP SSE transport at /mcp
+mcp_app = mcp.sse_app()
+
+app = Starlette(
+    routes=auth_routes,
+    on_startup=[],
+)
+
+# Mount MCP SSE at /mcp
+app.mount("/mcp", mcp_app)
+
+
+def main():
+    uvicorn.run(
+        "froide_mcp.server:app",
+        host="0.0.0.0",
+        port=config.port,
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,5 @@
+project_id         = "your-gcp-project-id"
+region             = "europe-north1"
+froide_service_url = "https://froide-xxxx.run.app"
+allowed_hd         = "yourdomain.fi"
+image              = "europe-north1-docker.pkg.dev/your-gcp-project-id/froide/froide-mcp:latest"

@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dev dependencies
+        run: pip install -e .[dev]
+
+      - name: ruff check
+        run: ruff check froide_mcp/ tests/
+
+      - name: ruff format --check
+        run: ruff format --check froide_mcp/ tests/
+
+      - name: mypy
+        run: mypy froide_mcp/
+
+  unit:
+    name: Unit & integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dev dependencies
+        run: pip install -e .[dev]
+
+      - name: pytest (unit + integration)
+        run: |
+          pytest tests/ \
+            --ignore=tests/test_smoke.py \
+            -v \
+            --tb=short \
+            --cov=froide_mcp \
+            --cov-report=term-missing \
+            --cov-fail-under=80
+
+  docker-build:
+    name: Docker build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t froide-mcp:ci .

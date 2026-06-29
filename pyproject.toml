@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "froide-mcp"
 version = "0.1.0"
 description = "MCP server for the Froide FOI platform"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=0.4.0",
     "httpx>=0.27.0",
@@ -34,10 +34,10 @@ packages = ["froide_mcp"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py312"
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 
 [tool.pytest.ini_options]

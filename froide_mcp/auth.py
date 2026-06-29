@@ -104,7 +104,8 @@ TOKEN_TTL = 8 * 3600
 
 
 def _sign(data: bytes) -> bytes:
-    return hmac.new(config.session_secret.encode(), data, hashlib.sha256).digest()
+    # hmac.new() does not exist — use hmac.HMAC() directly.
+    return hmac.HMAC(config.session_secret.encode(), data, hashlib.sha256).digest()
 
 
 def create_session_token(email: str, froide_token: str) -> str:

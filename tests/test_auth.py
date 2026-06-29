@@ -1,7 +1,9 @@
 """Unit tests: session token signing and Google OAuth2 helpers."""
 from __future__ import annotations
+import dataclasses
 import time
 import pytest
+import froide_mcp.auth as auth_mod
 from froide_mcp.auth import (
     create_session_token,
     decode_session_token,
@@ -28,8 +30,7 @@ class TestSessionToken:
             decode_session_token("notavalidtoken")
 
     def test_expired_rejected(self, monkeypatch):
-        import froide_mcp.auth as auth_mod
-        monkeypatch.setattr(auth_mod, "TOKEN_TTL", -1)  # already expired
+        monkeypatch.setattr(auth_mod, "TOKEN_TTL", -1)
         token = create_session_token(email="u@example.com", froide_token="tok")
         with pytest.raises(ValueError, match="expired"):
             decode_session_token(token)
@@ -42,27 +43,27 @@ class TestGoogleHelpers:
         assert "response_type=code" in url
 
     def test_auth_url_includes_hd_when_set(self, monkeypatch):
-        import froide_mcp.auth as auth_mod
-        from unittest.mock import patch
-        with patch.object(auth_mod.config, "allowed_hd", "company.fi"):
-            url = google_auth_url(state="s")
+        monkeypatch.setattr(
+            auth_mod, "config", dataclasses.replace(auth_mod.config, allowed_hd="company.fi")
+        )
+        url = google_auth_url(state="s")
         assert "hd=company.fi" in url
 
-    def test_verify_hd_passes_matching(self):
-        from unittest.mock import patch
-        import froide_mcp.auth as auth_mod
-        with patch.object(auth_mod.config, "allowed_hd", "company.fi"):
-            verify_hd({"hd": "company.fi"})  # must not raise
+    def test_verify_hd_passes_matching(self, monkeypatch):
+        monkeypatch.setattr(
+            auth_mod, "config", dataclasses.replace(auth_mod.config, allowed_hd="company.fi")
+        )
+        verify_hd({"hd": "company.fi"})  # must not raise
 
-    def test_verify_hd_rejects_other_domain(self):
-        from unittest.mock import patch
-        import froide_mcp.auth as auth_mod
-        with patch.object(auth_mod.config, "allowed_hd", "company.fi"):
-            with pytest.raises(PermissionError):
-                verify_hd({"hd": "evil.com"})
+    def test_verify_hd_rejects_other_domain(self, monkeypatch):
+        monkeypatch.setattr(
+            auth_mod, "config", dataclasses.replace(auth_mod.config, allowed_hd="company.fi")
+        )
+        with pytest.raises(PermissionError):
+            verify_hd({"hd": "evil.com"})
 
-    def test_verify_hd_skipped_when_empty(self):
-        from unittest.mock import patch
-        import froide_mcp.auth as auth_mod
-        with patch.object(auth_mod.config, "allowed_hd", ""):
-            verify_hd({"hd": "anyone.com"})  # must not raise
+    def test_verify_hd_skipped_when_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            auth_mod, "config", dataclasses.replace(auth_mod.config, allowed_hd="")
+        )
+        verify_hd({"hd": "anyone.com"})  # must not raise

@@ -89,11 +89,11 @@ curl -H "X-Froide-Session: <token>" $MCP_URL/mcp
 
 ## GitHub Actions secrets required
 
-Same as `froide-infra`:
-
-| Name | Where |
-|---|---|
-| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Repo secrets |
-| `GCP_SERVICE_ACCOUNT` | Repo secrets |
-| `GCP_REGION` | Repo variables |
-| `GCP_PROJECT_ID` | Repo variables |
+| Name | Type | Used by | Notes |
+|---|---|---|---|
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Secret | `deploy.yml` | Workload Identity Federation provider resource name |
+| `GCP_SERVICE_ACCOUNT` | Secret | `deploy.yml` | Service account email for OIDC impersonation |
+| `GCP_REGION` | Variable | `deploy.yml` | GCP region, e.g. `europe-north1` |
+| `GCP_PROJECT_ID` | Variable | `deploy.yml` | GCP project ID |
+| `MCP_SERVICE_URL` | Variable | `deploy.yml`, `monitor.yml` | Cloud Run service URL — set after first deploy (`terraform output mcp_service_url`) |
+| `SMOKE_SESSION_TOKEN` | Secret | `deploy.yml`, `monitor.yml` | Long-lived session token for smoke tests — obtain via `/auth/login` and rotate before expiry (8 h TTL) |

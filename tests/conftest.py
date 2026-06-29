@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import pytest
 import respx
-import httpx
 
 # Minimal env so config.py imports without real secrets
 os.environ.setdefault("FROIDE_BASE_URL", "http://froide.test")

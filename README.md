@@ -44,7 +44,7 @@ This repo is applied as a **patch on top of a Froide installation** — it does 
 |---|---|---|
 | `list_requests` | GET | `/api/v1/request/` |
 | `get_request` | GET | `/api/v1/request/{id}/` |
-| `search_requests` | GET | `/api/v1/request/?q=` |
+| `search_requests` | GET | `/api/v1/request/?q={query}` |
 | `make_request` | POST | `/api/v1/request/` |
 | `send_followup` | POST | `/api/v1/message/` |
 | `set_request_status` | PATCH | `/api/v1/request/{id}/` |
@@ -75,7 +75,7 @@ This repo is applied as a **patch on top of a Froide installation** — it does 
 
 | Tool | Method | Froide endpoint |
 |---|---|---|
-| `list_attachments` | GET | `/api/v1/attachment/?belongs_to=` |
+| `list_attachments` | GET | `/api/v1/attachment/?belongs_to={request_id}` |
 | `get_my_profile` | GET | `/api/v1/user/` |
 
 ## Local development

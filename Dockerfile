@@ -2,12 +2,13 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install dependencies first (layer cache)
+# Copy source and metadata together so pip install has the package available
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e .
-
-# Copy source
 COPY froide_mcp/ froide_mcp/
+
+# Install production dependencies (non-editable — editable installs are not
+# appropriate for immutable container images)
+RUN pip install --no-cache-dir .
 
 # Cloud Run injects PORT env var
 ENV PORT=8080

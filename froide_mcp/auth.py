@@ -45,7 +45,14 @@ def google_auth_url(state: str) -> str:
 
 
 def exchange_google_code(code: str) -> dict:
-    """Exchange authorisation code for Google tokens. Returns the ID token claims."""
+    """Exchange authorisation code for Google tokens. Returns the ID token claims.
+
+    Note: this implementation decodes the JWT payload without verifying the
+    Google JWKS signature.  The token is received over a direct server-to-server
+    HTTPS POST to accounts.google.com so the transport-level trust is high, but
+    for stronger security consider validating with google-auth or PyJWT +
+    GOOGLE_CERTS_URL before relying on the claims in production.
+    """
     resp = httpx.post(
         GOOGLE_TOKEN_URL,
         data={
@@ -59,7 +66,7 @@ def exchange_google_code(code: str) -> dict:
     )
     resp.raise_for_status()
     tokens = resp.json()
-    # Decode JWT payload (no signature verification needed — came directly from Google)
+    # Decode JWT payload (base64url, middle segment)
     id_token = tokens["id_token"]
     payload_b64 = id_token.split(".")[1]
     # Pad base64
@@ -104,8 +111,7 @@ TOKEN_TTL = 8 * 3600
 
 
 def _sign(data: bytes) -> bytes:
-    # hmac.new() does not exist — use hmac.HMAC() directly.
-    return hmac.HMAC(config.session_secret.encode(), data, hashlib.sha256).digest()
+    return hmac.new(config.session_secret.encode(), data, hashlib.sha256).digest()
 
 
 def create_session_token(email: str, froide_token: str) -> str:

@@ -1,5 +1,6 @@
 """Unit tests: session token signing and Google OAuth2 helpers."""
 from __future__ import annotations
+import dataclasses
 import time
 import pytest
 import froide_mcp.auth as auth_mod
@@ -42,19 +43,27 @@ class TestGoogleHelpers:
         assert "response_type=code" in url
 
     def test_auth_url_includes_hd_when_set(self, monkeypatch):
-        monkeypatch.setattr(auth_mod.config, "allowed_hd", "company.fi")
+        monkeypatch.setattr(
+            auth_mod, "config", dataclasses.replace(auth_mod.config, allowed_hd="company.fi")
+        )
         url = google_auth_url(state="s")
         assert "hd=company.fi" in url
 
     def test_verify_hd_passes_matching(self, monkeypatch):
-        monkeypatch.setattr(auth_mod.config, "allowed_hd", "company.fi")
+        monkeypatch.setattr(
+            auth_mod, "config", dataclasses.replace(auth_mod.config, allowed_hd="company.fi")
+        )
         verify_hd({"hd": "company.fi"})  # must not raise
 
     def test_verify_hd_rejects_other_domain(self, monkeypatch):
-        monkeypatch.setattr(auth_mod.config, "allowed_hd", "company.fi")
+        monkeypatch.setattr(
+            auth_mod, "config", dataclasses.replace(auth_mod.config, allowed_hd="company.fi")
+        )
         with pytest.raises(PermissionError):
             verify_hd({"hd": "evil.com"})
 
     def test_verify_hd_skipped_when_empty(self, monkeypatch):
-        monkeypatch.setattr(auth_mod.config, "allowed_hd", "")
+        monkeypatch.setattr(
+            auth_mod, "config", dataclasses.replace(auth_mod.config, allowed_hd="")
+        )
         verify_hd({"hd": "anyone.com"})  # must not raise

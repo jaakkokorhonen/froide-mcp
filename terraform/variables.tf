@@ -25,3 +25,9 @@ variable "image" {
   type        = string
   default     = "europe-north1-docker.pkg.dev/YOUR_PROJECT/froide/froide-mcp:latest"
 }
+
+variable "mcp_base_url" {
+  description = "Public HTTPS base URL of this MCP service, used for Google OAuth redirect_uri. Keep this in Terraform state so later applies do not remove it."
+  type        = string
+  default     = ""
+}

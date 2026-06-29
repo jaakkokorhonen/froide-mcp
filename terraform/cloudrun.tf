@@ -24,7 +24,12 @@ resource "google_cloud_run_v2_service" "mcp" {
         cpu_idle = true
       }
 
-      # Plain env vars
+      # Plain env vars.
+      # IMPORTANT: MCP_BASE_URL must live in Terraform state. Earlier versions
+      # documented a manual `gcloud run services update --set-env-vars` step,
+      # but a later `terraform apply` would then remove MCP_BASE_URL because
+      # Terraform owns the Cloud Run env var set. Keeping it here preserves the
+      # OAuth redirect URI across future deploys.
       env {
         name  = "FROIDE_BASE_URL"
         value = var.froide_service_url
@@ -32,6 +37,10 @@ resource "google_cloud_run_v2_service" "mcp" {
       env {
         name  = "ALLOWED_HD"
         value = var.allowed_hd
+      }
+      env {
+        name  = "MCP_BASE_URL"
+        value = var.mcp_base_url
       }
 
       # Secrets from Secret Manager
@@ -53,9 +62,6 @@ resource "google_cloud_run_v2_service" "mcp" {
           }
         }
       }
-
-      # MCP_BASE_URL is injected after first deploy (chicken-and-egg)
-      # Set it manually: gcloud run services update froide-mcp --set-env-vars MCP_BASE_URL=<url>
     }
 
     scaling {
@@ -72,7 +78,7 @@ resource "google_cloud_run_v2_service" "mcp" {
   }
 }
 
-# Output the service URL so MCP_BASE_URL can be set
+# Output the service URL so it can be copied into terraform.tfvars as mcp_base_url
 output "mcp_service_url" {
   value = google_cloud_run_v2_service.mcp.uri
 }

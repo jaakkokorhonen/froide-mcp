@@ -8,7 +8,7 @@ about missing tokens.
 from __future__ import annotations
 
 import secrets
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
 import uvicorn
 from starlette.applications import Starlette
@@ -50,11 +50,9 @@ class RequireSessionMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         path = request.url.path
-        # Auth endpoints and health check are always public
         if path.startswith("/auth/") or path == "/healthz":
             return await call_next(request)
 
-        # Everything under /mcp requires a session token
         if path.startswith("/mcp"):
             raw = request.headers.get("x-froide-session", "")
             if not raw:
@@ -69,7 +67,7 @@ class RequireSessionMiddleware(BaseHTTPMiddleware):
                     status_code=401,
                 )
             try:
-                decode_session_token(raw)  # raises ValueError on invalid/expired
+                decode_session_token(raw)
             except ValueError as exc:
                 return JSONResponse(
                     {"error": "Invalid or expired session token", "detail": str(exc)},
@@ -144,7 +142,6 @@ app = Starlette(
     middleware=[Middleware(RequireSessionMiddleware)],
 )
 
-# Mount FastMCP HTTP transport at /mcp
 app.mount("/mcp", mcp_app)
 
 

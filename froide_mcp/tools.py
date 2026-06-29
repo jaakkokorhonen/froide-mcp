@@ -6,6 +6,7 @@ bearer token from the already-validated session.
 """
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from fastmcp import Context, FastMCP
@@ -57,6 +58,13 @@ def _request_status(req: dict[str, Any]) -> str:
     return str(req.get("status") or "unknown")
 
 
+def _request_messages(req: dict[str, Any]) -> list[dict[str, Any]]:
+    messages = req.get("messages")
+    if isinstance(messages, list):
+        return [m for m in messages if isinstance(m, dict)]
+    return []
+
+
 def _contains_user_action_hint(req: dict[str, Any]) -> bool:
     """Heuristic: check free-text fields for keywords that suggest pending action."""
     haystack = " ".join(
@@ -70,8 +78,8 @@ def _contains_user_action_hint(req: dict[str, Any]) -> bool:
         if v
     )
     return any(
-        m in haystack
-        for m in ("fee", "clarif", "user action", "requires action", "postal", "confirmation")
+        marker in haystack
+        for marker in ("fee", "clarif", "user action", "requires action", "postal", "confirmation")
     )
 
 
@@ -124,6 +132,68 @@ def _derive_next_step(req: dict[str, Any]) -> str:
     if status in {"refused", "not_held"}:
         return "Review the refusal reasoning and decide whether a clarification or appeal-style follow-up is needed."
     return "Review the request thread in the Froide UI and decide the next manual step."
+
+
+def _latest_message_text(req: dict[str, Any]) -> str:
+    messages = _request_messages(req)
+    if not messages:
+        return ""
+    latest = messages[-1]
+    return str(
+        latest.get("message")
+        or latest.get("body")
+        or latest.get("content")
+        or latest.get("text")
+        or ""
+    ).strip()
+
+
+def _latest_message_subject(req: dict[str, Any]) -> str:
+    messages = _request_messages(req)
+    if not messages:
+        return str(req.get("subject") or req.get("title") or "")
+    latest = messages[-1]
+    return str(latest.get("subject") or req.get("subject") or req.get("title") or "").strip()
+
+
+def _draft_followup_text(req: dict[str, Any]) -> str:
+    status = _request_status(req)
+    subject = _latest_message_subject(req) or _request_identifier(req)
+    if status == "awaiting_response":
+        return (
+            f"Hello,\n\nI am following up on my request \"{subject}\". "
+            "Could you please let me know the current processing status and when I can expect a response?\n\n"
+            "Best regards"
+        )
+    if status in {"refused", "not_held"}:
+        return (
+            f"Hello,\n\nThank you for your response regarding \"{subject}\". "
+            "Could you please clarify the legal and factual basis for this outcome and confirm whether any partial disclosure is possible?\n\n"
+            "Best regards"
+        )
+    if status in {"publicbody_needed", "awaiting_publicbody_confirmation"}:
+        return (
+            f"Hello,\n\nI would like to confirm the competent authority for \"{subject}\". "
+            "If this office is not responsible, please indicate which public body should receive the request.\n\n"
+            "Best regards"
+        )
+    return (
+        f"Hello,\n\nI am writing regarding my request \"{subject}\". "
+        "Could you please confirm the current status and any next steps required from my side?\n\n"
+        "Best regards"
+    )
+
+
+def _summarize_request(req: dict[str, Any]) -> dict[str, Any]:
+    priority, rationale = _priority_for_request(req)
+    return {
+        "request_id": req.get("id"),
+        "label": _request_identifier(req),
+        "status": _request_status(req),
+        "priority": priority,
+        "why": rationale,
+        "next_step": _derive_next_step(req),
+    }
 
 
 # ── FOI Requests ──────────────────────────────────────────────────────────
@@ -447,4 +517,194 @@ async def summarize_request_thread(ctx: Context, request_id: int) -> dict[str, A
         "priority": priority,
         "why": rationale,
         "next_step": _derive_next_step(req),
+    }
+
+
+@mcp.tool()
+async def draft_followup_for_request(ctx: Context, request_id: int) -> dict[str, Any]:
+    """Draft a follow-up message based on a request's current status and latest thread state.
+
+    This tool does not send anything. It returns a subject suggestion, a draft
+    body and the reasoning behind the draft so an operator can review it before
+    using send_followup.
+    """
+    token = _token_from_ctx(ctx)
+    async with FroideClient(token) as c:
+        req = await c.get(f"/api/v1/request/{request_id}/")
+    latest_excerpt = _latest_message_text(req)[:280]
+    return {
+        "request_id": req.get("id", request_id),
+        "label": _request_identifier(req),
+        "status": _request_status(req),
+        "subject": _latest_message_subject(req) or f"Follow-up on {_request_identifier(req)}",
+        "draft_message": _draft_followup_text(req),
+        "latest_message_excerpt": latest_excerpt,
+        "why": _derive_next_step(req),
+    }
+
+
+@mcp.tool()
+async def preflight_request_submission(
+    ctx: Context,
+    public_body_id: int,
+    subject: str,
+    body: str,
+    law_id: int | None = None,
+    campaign_id: int | None = None,
+    public: bool = True,
+) -> dict[str, Any]:
+    """Validate a prospective request before calling make_request.
+
+    This performs local MCP-side checks only. It does not create a request.
+    Use it to surface missing fields and basic risks before submission.
+    """
+    token = _token_from_ctx(ctx)
+    issues: list[str] = []
+    warnings: list[str] = []
+
+    clean_subject = subject.strip()
+    clean_body = body.strip()
+
+    if not clean_subject:
+        issues.append("Subject is required.")
+    elif len(clean_subject) < 8:
+        warnings.append("Subject is very short; consider making it more specific.")
+
+    if not clean_body:
+        issues.append("Body is required.")
+    elif len(clean_body) < 120:
+        warnings.append("Body is short; add more context so the authority can identify the records.")
+
+    if "?" not in clean_body and "please" not in clean_body.lower():
+        warnings.append("The body may not contain a clearly phrased request or question.")
+
+    async with FroideClient(token) as c:
+        public_body = await c.get(f"/api/v1/publicbody/{public_body_id}/")
+        law = await c.get(f"/api/v1/law/{law_id}/") if law_id else None
+        campaign = await c.get(f"/api/v1/campaign/{campaign_id}/") if campaign_id else None
+
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "warnings": warnings,
+        "request_preview": {
+            "public_body_id": public_body_id,
+            "public_body_name": public_body.get("name") or public_body.get("title"),
+            "subject": clean_subject,
+            "body_preview": clean_body[:500],
+            "law_id": law_id,
+            "law_name": law.get("name") if isinstance(law, dict) else None,
+            "campaign_id": campaign_id,
+            "campaign_name": campaign.get("title") if isinstance(campaign, dict) else None,
+            "public": public,
+        },
+        "next_step": "Call make_request if there are no blocking issues.",
+    }
+
+
+@mcp.tool()
+async def get_request_analytics(
+    ctx: Context,
+    statuses: list[str] | None = None,
+    page: int = 1,
+) -> dict[str, Any]:
+    """Compute simple request analytics from visible requests using existing API endpoints.
+
+    Returns counts by status, priority bands and the top actionable requests.
+    No backend aggregation endpoints are required.
+    """
+    triage = await triage_my_requests(ctx, statuses=statuses, page=page)
+    items = triage["items"]
+    status_counts = Counter(item["status"] for item in items)
+    priority_bands = {
+        "critical": sum(1 for item in items if item["priority"] >= 90),
+        "high": sum(1 for item in items if 80 <= item["priority"] < 90),
+        "medium": sum(1 for item in items if 50 <= item["priority"] < 80),
+        "low": sum(1 for item in items if item["priority"] < 50),
+    }
+    return {
+        "count": len(items),
+        "statuses_queried": triage["statuses_queried"],
+        "status_counts": dict(sorted(status_counts.items())),
+        "priority_bands": priority_bands,
+        "top_requests": items[:10],
+    }
+
+
+@mcp.tool()
+async def draft_request(
+    ctx: Context,
+    public_body_id: int,
+    goal: str,
+    records_description: str,
+    law_id: int | None = None,
+    public: bool = True,
+) -> dict[str, Any]:
+    """Draft a FOI request body from a user goal and the target public body.
+
+    This tool does not submit anything. It produces a suggested subject and
+    request body that can be reviewed or passed into preflight_request_submission.
+    """
+    token = _token_from_ctx(ctx)
+    async with FroideClient(token) as c:
+        public_body_payload = await c.get(f"/api/v1/publicbody/{public_body_id}/")
+        law_payload = await c.get(f"/api/v1/law/{law_id}/") if law_id else None
+
+    public_body_name = str(public_body_payload.get("name") or public_body_payload.get("title") or public_body_id)
+    subject = f"Request for access to {records_description.strip()}"
+    body = (
+        f"Hello,\n\n"
+        f"I am requesting access to information held by {public_body_name}. "
+        f"My goal is: {goal.strip()}.\n\n"
+        f"Please provide access to the following records or information: {records_description.strip()}.\n\n"
+        "If some parts cannot be disclosed, please release the remaining material and explain any redactions or refusals.\n\n"
+        "Please let me know if the request needs to be narrowed or clarified.\n\n"
+        "Best regards"
+    )
+    return {
+        "public_body_id": public_body_id,
+        "public_body_name": public_body_name,
+        "law_id": law_id,
+        "law_name": law_payload.get("name") if isinstance(law_payload, dict) else None,
+        "public": public,
+        "suggested_subject": subject,
+        "draft_body": body,
+        "next_step": "Review the draft and run preflight_request_submission before make_request.",
+    }
+
+
+@mcp.tool()
+async def followup_after_deadline(
+    ctx: Context,
+    query: str | None = None,
+    page: int = 1,
+) -> dict[str, Any]:
+    """Find requests that are most likely overdue and pair them with follow-up drafts.
+
+    Since the current API surface in this repo does not expose an explicit legal
+    deadline field, this tool uses the actionable queue and focuses on
+    awaiting_response requests as likely follow-up candidates.
+    """
+    triage = await triage_my_requests(ctx, statuses=["awaiting_response"], query=query, page=page)
+    items: list[dict[str, Any]] = []
+    for item in triage["items"]:
+        draft = await draft_followup_for_request(ctx, request_id=item["request_id"])
+        items.append(
+            {
+                "request_id": item["request_id"],
+                "label": item["label"],
+                "status": item["status"],
+                "priority": item["priority"],
+                "next_step": item["next_step"],
+                "draft_subject": draft["subject"],
+                "draft_message": draft["draft_message"],
+            }
+        )
+    return {
+        "count": len(items),
+        "items": items,
+        "guidance": (
+            "These requests are still awaiting a response and are the best candidates "
+            "for deadline-style follow-up review in the Froide UI."
+        ),
     }

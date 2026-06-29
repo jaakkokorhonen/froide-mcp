@@ -88,31 +88,26 @@ This repo is applied as a **patch on top of a Froide installation** — it does 
 
 ### Orchestration helpers
 
-These tools compose existing API calls into higher-level operator workflows.
-They do **not** modify any Froide data and require no Django/backend changes.
-They are designed to guide work inside the Froide UI rather than replace it.
+These tools compose existing API calls into higher-level workflows. They do **not** modify any Froide data and require no Django/backend changes. Their purpose is to help operators work more efficiently inside the existing Froide UI.
 
 | Tool | What it does |
 |---|---|
-| `triage_my_requests` | Builds a prioritised work queue across all actionable statuses with a suggested next step per request |
-| `find_requests_needing_action` | Focused subset of the triage queue — only requests that likely need a human decision soon |
-| `summarize_request_thread` | Operator briefing for a single thread: status, message count, attachment count, priority, next step |
-| `draft_followup_for_request` | Drafts a status-aware follow-up message for review before sending via `send_followup` |
-| `preflight_request_submission` | Validates a prospective request before `make_request` — checks fields and surfaces warnings |
-| `get_request_analytics` | Counts by status and priority band across visible requests |
-| `draft_request` | Drafts a FOI request body from a goal and records description for review before submission |
-| `followup_after_deadline` | Drafts a deadline-referencing follow-up for a single request (single-request variant) |
-| `followup_overdue_requests` | Batch variant: scans all `awaiting_response` requests and pairs each with a deadline follow-up draft |
+| `triage_my_requests` | Builds a prioritised work queue across actionable statuses with a suggested next step per request |
+| `find_requests_needing_action` | Filters the triage queue to only requests that likely need an immediate human decision |
+| `summarize_request_thread` | Returns a compact operator briefing for one request: status, message count, attachment count, priority |
+| `draft_followup_for_request` | Drafts a status-aware follow-up message; does not send anything |
+| `draft_request` | Drafts a FOI request body from a goal and records description; does not submit anything |
+| `preflight_request_submission` | Validates a prospective request (subject, body, public body) before calling `make_request` |
+| `get_request_analytics` | Aggregates visible requests into status counts and priority bands |
+| `followup_after_deadline` | Drafts a statutory-deadline follow-up for a request that has exceeded its legal response period; does not send anything |
 
-#### Design principle
+## Development history
 
-Orchestration tools are pure compositions of the `/api/v1/` layer. They were first
-prototyped locally as a patch proposal (covering `triage_my_requests`,
-`find_requests_needing_action` and `summarize_request_thread`) when direct GitHub
-access was not available. Once repository access was established the full set of
-tools was implemented and merged directly. The split between *read/triage* tools
-and *draft/preflight* tools reflects the same principle: the MCP server guides
-operators toward informed actions in the Froide UI rather than bypassing it.
+The orchestration helper layer was built iteratively. The initial design and implementation draft were produced without direct repository access: a local patch-level proposal was written that added documentation and the first three orchestration tools (`triage_my_requests`, `find_requests_needing_action`, `summarize_request_thread`) on top of the existing API layer.
+
+That first version was deliberately scoped to UI-level orchestration with no Django changes required — the three tools compose `list_requests`, `get_request` and `list_attachments` calls that already existed. The README update described the new "Orchestration helpers" section and established the principle that these tools guide operators inside the existing Froide UI rather than replicating backend logic.
+
+The remaining five tools (`draft_followup_for_request`, `preflight_request_submission`, `get_request_analytics`, `draft_request`, `followup_after_deadline`) and their tests were added in subsequent PRs once repository access was available, completing the orchestration layer. All tools follow the same bearer-token authentication pattern as the core API tools and build exclusively on `/api/v1/` endpoints.
 
 ## Local development
 

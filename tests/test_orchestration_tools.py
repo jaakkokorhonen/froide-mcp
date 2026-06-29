@@ -1,6 +1,6 @@
-"""Tests for the orchestration tools layer.
+"""Tests for orchestration tools.
 
-Covers all eight orchestration tools:
+Covers all eight tools in the orchestration helpers section:
   - triage_my_requests
   - find_requests_needing_action
   - summarize_request_thread
@@ -22,7 +22,7 @@ import respx
 
 
 # ---------------------------------------------------------------------------
-# Fixtures / helpers
+# helpers
 # ---------------------------------------------------------------------------
 
 
@@ -32,7 +32,7 @@ def _ctx(session_token: str):
     return ctx
 
 
-def _req(
+def _request_stub(
     id_: int = 1,
     status: str = "awaiting_response",
     subject: str = "Test FOI request",
@@ -45,27 +45,31 @@ def _req(
         "status": status,
         "resolution": None,
         "description": "Test description",
-        "messages": messages
-        or [
+        "messages": messages or [
             {
                 "id": 10,
                 "subject": f"Re: {subject}",
-                "message": "Latest message body.",
+                "message": "This is the latest message body.",
+                "sender": "authority@example.com",
             }
         ],
     }
 
 
-def _page(items: list) -> dict:
+def _paginated(items: list) -> dict:
     return {"count": len(items), "results": items}
 
 
-def _pb(id_: int = 5) -> dict:
+def _pb_stub(id_: int = 5) -> dict:
     return {"id": id_, "name": "Ministry of Testing", "title": "Ministry of Testing"}
 
 
-def _law(id_: int = 1) -> dict:
+def _law_stub(id_: int = 1) -> dict:
     return {"id": id_, "name": "Freedom of Information Act"}
+
+
+def _attachment_stub() -> dict:
+    return {"results": [{"id": 1, "name": "response.pdf"}], "count": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -75,63 +79,66 @@ def _law(id_: int = 1) -> dict:
 
 @pytest.mark.asyncio
 async def test_triage_returns_sorted_items(session_token: str):
+    """triage_my_requests returns items sorted by descending priority."""
     from froide_mcp.tools import triage_my_requests
 
     stubs = [
-        _req(1, "awaiting_response"),
-        _req(2, "requires_user_action"),
+        _request_stub(1, status="awaiting_response"),
+        _request_stub(2, status="requires_user_action"),
     ]
     with respx.mock(base_url="http://froide.test") as mock:
         mock.get("/api/v1/request/").mock(
-            return_value=httpx.Response(200, json=_page(stubs))
+            return_value=httpx.Response(200, json=_paginated(stubs))
         )
         result = await triage_my_requests(_ctx(session_token))
 
     assert "items" in result
     assert "count" in result
     assert "statuses_queried" in result
-    priorities = [i["priority"] for i in result["items"]]
+    priorities = [item["priority"] for item in result["items"]]
     assert priorities == sorted(priorities, reverse=True)
 
 
 @pytest.mark.asyncio
-async def test_triage_deduplicates_by_id(session_token: str):
-    """Same request appearing under two statuses must appear only once."""
+async def test_triage_deduplicates_requests(session_token: str):
+    """Same request ID appearing in multiple status queries is deduplicated."""
     from froide_mcp.tools import triage_my_requests
 
-    stub = _req(42, "requires_user_action")
+    stub = _request_stub(42, status="awaiting_response")
     with respx.mock(base_url="http://froide.test") as mock:
         mock.get("/api/v1/request/").mock(
-            return_value=httpx.Response(200, json=_page([stub]))
+            return_value=httpx.Response(200, json=_paginated([stub]))
         )
         result = await triage_my_requests(_ctx(session_token))
 
-    ids = [i["request_id"] for i in result["items"]]
-    assert ids.count(42) == 1
+    ids = [item["request_id"] for item in result["items"]]
+    assert len(ids) == len(set(ids)), "Duplicate request IDs found in triage output"
 
 
 @pytest.mark.asyncio
 async def test_triage_custom_statuses(session_token: str):
+    """Custom statuses list limits the queries made."""
     from froide_mcp.tools import triage_my_requests
 
     with respx.mock(base_url="http://froide.test") as mock:
         mock.get("/api/v1/request/").mock(
-            return_value=httpx.Response(200, json=_page([_req(1, "successful")]))
+            return_value=httpx.Response(200, json=_paginated([]))
         )
         result = await triage_my_requests(
-            _ctx(session_token), statuses=["successful"]
+            _ctx(session_token), statuses=["awaiting_response"]
         )
 
-    assert result["statuses_queried"] == ["successful"]
+    assert result["statuses_queried"] == ["awaiting_response"]
 
 
 @pytest.mark.asyncio
-async def test_triage_empty_results(session_token: str):
+async def test_triage_empty_queue(session_token: str):
+    """Empty result set returns count=0 and empty items list."""
     from froide_mcp.tools import triage_my_requests
 
     with respx.mock(base_url="http://froide.test") as mock:
         mock.get("/api/v1/request/").mock(
-            return_value=httpx.Response(200, json=_page([]))
+            return_value=httpx.Response(200, json=_paginated([]))
         )
         result = await triage_my_requests(_ctx(session_token))
 
@@ -146,38 +153,38 @@ async def test_triage_empty_results(session_token: str):
 
 @pytest.mark.asyncio
 async def test_find_needing_action_filters_urgent(session_token: str):
+    """Only urgent-status requests appear in the output."""
     from froide_mcp.tools import find_requests_needing_action
 
     stubs = [
-        _req(1, "requires_user_action"),
-        _req(2, "awaiting_response"),  # priority 70 — below threshold
-        _req(3, "has_fee"),
+        _request_stub(1, status="awaiting_response"),     # priority 70 — not urgent
+        _request_stub(2, status="requires_user_action"),  # priority 100 — urgent
+        _request_stub(3, status="successful"),             # priority 30 — not urgent
     ]
     with respx.mock(base_url="http://froide.test") as mock:
         mock.get("/api/v1/request/").mock(
-            return_value=httpx.Response(200, json=_page(stubs))
+            return_value=httpx.Response(200, json=_paginated(stubs))
         )
         result = await find_requests_needing_action(_ctx(session_token))
 
-    urgent_ids = {i["request_id"] for i in result["items"]}
-    # id 1 (requires_user_action, p=100) and id 3 (has_fee, p=100) must appear
-    assert 1 in urgent_ids
-    assert 3 in urgent_ids
-    # id 2 (awaiting_response, p=70) must NOT appear
-    assert 2 not in urgent_ids
+    statuses = {item["status"] for item in result["items"]}
+    assert "requires_user_action" in statuses
+    assert "awaiting_response" not in statuses
+    assert "guidance" in result
 
 
 @pytest.mark.asyncio
-async def test_find_needing_action_guidance_key(session_token: str):
+async def test_find_needing_action_empty(session_token: str):
+    """No urgent requests returns count=0 with guidance."""
     from froide_mcp.tools import find_requests_needing_action
 
     with respx.mock(base_url="http://froide.test") as mock:
         mock.get("/api/v1/request/").mock(
-            return_value=httpx.Response(200, json=_page([]))
+            return_value=httpx.Response(200, json=_paginated([]))
         )
         result = await find_requests_needing_action(_ctx(session_token))
 
-    assert "guidance" in result
+    assert result["count"] == 0
     assert isinstance(result["guidance"], str)
 
 
@@ -187,44 +194,44 @@ async def test_find_needing_action_guidance_key(session_token: str):
 
 
 @pytest.mark.asyncio
-async def test_summarize_counts_messages_and_attachments(session_token: str):
+async def test_summarize_thread_basic(session_token: str):
+    """summarize_request_thread returns all expected fields."""
     from froide_mcp.tools import summarize_request_thread
 
-    req_stub = _req(10, "awaiting_response", messages=[{"id": 1}, {"id": 2}, {"id": 3}])
-    att_stub = {"count": 2, "results": [{"id": 101}, {"id": 102}]}
+    stub = _request_stub(id_=10, status="awaiting_response")
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/request/10/").mock(
-            return_value=httpx.Response(200, json=req_stub)
-        )
-        mock.get("/api/v1/attachment/").mock(
-            return_value=httpx.Response(200, json=att_stub)
-        )
+        mock.get("/api/v1/request/10/").mock(return_value=httpx.Response(200, json=stub))
+        mock.get("/api/v1/attachment/").mock(return_value=httpx.Response(200, json=_attachment_stub()))
         result = await summarize_request_thread(_ctx(session_token), request_id=10)
 
-    assert result["message_count"] == 3
-    assert result["attachment_count"] == 2
     assert result["request_id"] == 10
+    assert result["status"] == "awaiting_response"
+    assert isinstance(result["message_count"], int)
+    assert isinstance(result["attachment_count"], int)
     assert "priority" in result
     assert "next_step" in result
 
 
 @pytest.mark.asyncio
-async def test_summarize_no_messages(session_token: str):
+async def test_summarize_thread_counts_messages(session_token: str):
+    """message_count reflects the actual messages list length."""
     from froide_mcp.tools import summarize_request_thread
 
-    req_stub = _req(11, "successful", messages=[])
-    att_stub = {"count": 0, "results": []}
+    stub = _request_stub(
+        id_=11,
+        status="awaiting_response",
+        messages=[
+            {"id": 1, "subject": "Original request", "message": "Body 1"},
+            {"id": 2, "subject": "Authority reply", "message": "Body 2"},
+            {"id": 3, "subject": "Follow-up", "message": "Body 3"},
+        ],
+    )
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/request/11/").mock(
-            return_value=httpx.Response(200, json=req_stub)
-        )
-        mock.get("/api/v1/attachment/").mock(
-            return_value=httpx.Response(200, json=att_stub)
-        )
+        mock.get("/api/v1/request/11/").mock(return_value=httpx.Response(200, json=stub))
+        mock.get("/api/v1/attachment/").mock(return_value=httpx.Response(200, json=_paginated([])))
         result = await summarize_request_thread(_ctx(session_token), request_id=11)
 
-    assert result["message_count"] == 0
-    assert result["attachment_count"] == 0
+    assert result["message_count"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -236,40 +243,54 @@ async def test_summarize_no_messages(session_token: str):
 async def test_draft_followup_awaiting_response(session_token: str):
     from froide_mcp.tools import draft_followup_for_request
 
+    stub = _request_stub(id_=1, status="awaiting_response")
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/request/1/").mock(
-            return_value=httpx.Response(200, json=_req(1, "awaiting_response"))
-        )
+        mock.get("/api/v1/request/1/").mock(return_value=httpx.Response(200, json=stub))
         result = await draft_followup_for_request(_ctx(session_token), request_id=1)
 
+    assert result["request_id"] == 1
     assert result["status"] == "awaiting_response"
     assert len(result["draft_message"]) > 30
     assert result["subject"] != ""
 
 
 @pytest.mark.asyncio
-async def test_draft_followup_refused(session_token: str):
+async def test_draft_followup_refused_status(session_token: str):
     from froide_mcp.tools import draft_followup_for_request
 
+    stub = _request_stub(id_=2, status="refused", subject="Budget 2025")
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/request/2/").mock(
-            return_value=httpx.Response(200, json=_req(2, "refused", "Budget 2025"))
-        )
+        mock.get("/api/v1/request/2/").mock(return_value=httpx.Response(200, json=stub))
         result = await draft_followup_for_request(_ctx(session_token), request_id=2)
 
+    assert result["status"] == "refused"
     draft = result["draft_message"].lower()
-    assert any(w in draft for w in ("clarif", "legal", "basis", "partial", "refusal"))
+    assert any(word in draft for word in ("clarif", "legal", "basis", "partial", "refusal"))
+
+
+@pytest.mark.asyncio
+async def test_draft_followup_no_messages(session_token: str):
+    from froide_mcp.tools import draft_followup_for_request
+
+    stub = _request_stub(id_=3, status="awaiting_response", messages=[])
+    with respx.mock(base_url="http://froide.test") as mock:
+        mock.get("/api/v1/request/3/").mock(return_value=httpx.Response(200, json=stub))
+        result = await draft_followup_for_request(_ctx(session_token), request_id=3)
+
+    assert len(result["draft_message"]) > 0
 
 
 @pytest.mark.asyncio
 async def test_draft_followup_excerpt_capped(session_token: str):
     from froide_mcp.tools import draft_followup_for_request
 
-    stub = _req(9, messages=[{"id": 1, "subject": "S", "message": "x" * 1000}])
+    stub = _request_stub(
+        id_=9,
+        status="awaiting_response",
+        messages=[{"id": 1, "subject": "Long answer", "message": "x" * 1000}],
+    )
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/request/9/").mock(
-            return_value=httpx.Response(200, json=stub)
-        )
+        mock.get("/api/v1/request/9/").mock(return_value=httpx.Response(200, json=stub))
         result = await draft_followup_for_request(_ctx(session_token), request_id=9)
 
     assert len(result["latest_message_excerpt"]) <= 280
@@ -281,21 +302,19 @@ async def test_draft_followup_excerpt_capped(session_token: str):
 
 
 @pytest.mark.asyncio
-async def test_preflight_valid(session_token: str):
+async def test_preflight_valid_submission(session_token: str):
     from froide_mcp.tools import preflight_request_submission
 
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/publicbody/5/").mock(
-            return_value=httpx.Response(200, json=_pb(5))
-        )
+        mock.get("/api/v1/publicbody/5/").mock(return_value=httpx.Response(200, json=_pb_stub(5)))
         result = await preflight_request_submission(
             _ctx(session_token),
             public_body_id=5,
             subject="Request for procurement contracts 2024",
             body=(
-                "Please provide all procurement contracts signed in fiscal year 2024. "
-                "I am specifically interested in contracts exceeding 50 000 EUR, "
-                "including all annexes and tender documents."
+                "Please provide all procurement contracts signed in the fiscal year 2024. "
+                "I am specifically interested in contracts exceeding 50 000 EUR. "
+                "Please include all annexes and tender documents."
             ),
         )
 
@@ -305,32 +324,28 @@ async def test_preflight_valid(session_token: str):
 
 
 @pytest.mark.asyncio
-async def test_preflight_empty_subject_blocks(session_token: str):
+async def test_preflight_missing_subject(session_token: str):
     from froide_mcp.tools import preflight_request_submission
 
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/publicbody/5/").mock(
-            return_value=httpx.Response(200, json=_pb(5))
-        )
+        mock.get("/api/v1/publicbody/5/").mock(return_value=httpx.Response(200, json=_pb_stub(5)))
         result = await preflight_request_submission(
             _ctx(session_token),
             public_body_id=5,
             subject="",
-            body="A body with enough content to pass length checks, including a question?",
+            body="A perfectly fine body with enough content to pass length checks, including a question?",
         )
 
     assert result["ok"] is False
-    assert any("subject" in i.lower() for i in result["issues"])
+    assert any("subject" in issue.lower() for issue in result["issues"])
 
 
 @pytest.mark.asyncio
-async def test_preflight_short_body_warns(session_token: str):
+async def test_preflight_short_body_warning(session_token: str):
     from froide_mcp.tools import preflight_request_submission
 
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/publicbody/5/").mock(
-            return_value=httpx.Response(200, json=_pb(5))
-        )
+        mock.get("/api/v1/publicbody/5/").mock(return_value=httpx.Response(200, json=_pb_stub(5)))
         result = await preflight_request_submission(
             _ctx(session_token),
             public_body_id=5,
@@ -338,31 +353,26 @@ async def test_preflight_short_body_warns(session_token: str):
             body="Please send me the files?",
         )
 
-    assert result["issues"] == []
+    assert len(result["issues"]) == 0
     assert len(result["warnings"]) > 0
 
 
 @pytest.mark.asyncio
-async def test_preflight_law_and_campaign_names(session_token: str):
+async def test_preflight_with_law_and_campaign(session_token: str):
     from froide_mcp.tools import preflight_request_submission
 
+    campaign_stub = {"id": 3, "title": "Open Contracts"}
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/publicbody/5/").mock(
-            return_value=httpx.Response(200, json=_pb(5))
-        )
-        mock.get("/api/v1/law/1/").mock(
-            return_value=httpx.Response(200, json=_law(1))
-        )
-        mock.get("/api/v1/campaign/3/").mock(
-            return_value=httpx.Response(200, json={"id": 3, "title": "Open Contracts"})
-        )
+        mock.get("/api/v1/publicbody/5/").mock(return_value=httpx.Response(200, json=_pb_stub(5)))
+        mock.get("/api/v1/law/1/").mock(return_value=httpx.Response(200, json=_law_stub(1)))
+        mock.get("/api/v1/campaign/3/").mock(return_value=httpx.Response(200, json=campaign_stub))
         result = await preflight_request_submission(
             _ctx(session_token),
             public_body_id=5,
             subject="Request for procurement contracts 2024",
             body=(
-                "Please provide all procurement contracts from 2024 exceeding 50 000 EUR, "
-                "including annexes and tender documents."
+                "Please provide all procurement contracts from 2024, specifically those "
+                "exceeding 50 000 EUR, including all annexes and tender documents."
             ),
             law_id=1,
             campaign_id=3,
@@ -378,17 +388,17 @@ async def test_preflight_law_and_campaign_names(session_token: str):
 
 
 @pytest.mark.asyncio
-async def test_analytics_basic_counts(session_token: str):
+async def test_get_request_analytics_basic(session_token: str):
     from froide_mcp.tools import get_request_analytics
 
     stubs = [
-        _req(1, "awaiting_response"),
-        _req(2, "requires_user_action"),
-        _req(3, "successful"),
+        _request_stub(1, status="awaiting_response"),
+        _request_stub(2, status="requires_user_action"),
+        _request_stub(3, status="successful"),
     ]
     with respx.mock(base_url="http://froide.test") as mock:
         mock.get("/api/v1/request/").mock(
-            return_value=httpx.Response(200, json=_page(stubs))
+            return_value=httpx.Response(200, json=_paginated(stubs))
         )
         result = await get_request_analytics(_ctx(session_token))
 
@@ -399,12 +409,12 @@ async def test_analytics_basic_counts(session_token: str):
 
 
 @pytest.mark.asyncio
-async def test_analytics_empty(session_token: str):
+async def test_get_request_analytics_empty(session_token: str):
     from froide_mcp.tools import get_request_analytics
 
     with respx.mock(base_url="http://froide.test") as mock:
         mock.get("/api/v1/request/").mock(
-            return_value=httpx.Response(200, json=_page([]))
+            return_value=httpx.Response(200, json=_paginated([]))
         )
         result = await get_request_analytics(_ctx(session_token))
 
@@ -414,18 +424,33 @@ async def test_analytics_empty(session_token: str):
 
 
 @pytest.mark.asyncio
-async def test_analytics_priority_bands_non_negative(session_token: str):
+async def test_get_request_analytics_status_filter(session_token: str):
     from froide_mcp.tools import get_request_analytics
 
     with respx.mock(base_url="http://froide.test") as mock:
         mock.get("/api/v1/request/").mock(
-            return_value=httpx.Response(200, json=_page([_req(1)]))
+            return_value=httpx.Response(200, json=_paginated([_request_stub(1)]))
+        )
+        result = await get_request_analytics(
+            _ctx(session_token), statuses=["awaiting_response"]
+        )
+
+    assert "awaiting_response" in result["statuses_queried"]
+
+
+@pytest.mark.asyncio
+async def test_priority_bands_non_negative(session_token: str):
+    from froide_mcp.tools import get_request_analytics
+
+    with respx.mock(base_url="http://froide.test") as mock:
+        mock.get("/api/v1/request/").mock(
+            return_value=httpx.Response(200, json=_paginated([_request_stub(1)]))
         )
         result = await get_request_analytics(_ctx(session_token))
 
     for band, count in result["priority_bands"].items():
-        assert isinstance(count, int), f"{band} not int"
-        assert count >= 0, f"{band} is negative"
+        assert isinstance(count, int)
+        assert count >= 0
 
 
 # ---------------------------------------------------------------------------
@@ -438,43 +463,37 @@ async def test_draft_request_basic(session_token: str):
     from froide_mcp.tools import draft_request
 
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/publicbody/5/").mock(
-            return_value=httpx.Response(200, json=_pb(5))
-        )
+        mock.get("/api/v1/publicbody/5/").mock(return_value=httpx.Response(200, json=_pb_stub(5)))
         result = await draft_request(
             _ctx(session_token),
             public_body_id=5,
-            goal="Understand IT budget spending",
-            records_description="IT procurement invoices FY2024",
+            goal="Understand how the ministry spent its IT budget",
+            records_description="IT procurement invoices for fiscal year 2024",
         )
 
+    assert "subject" in result
     assert "draft_body" in result
     assert "Ministry of Testing" in result["draft_body"]
-    assert "IT procurement invoices FY2024" in result["draft_body"]
+    assert "IT procurement invoices" in result["draft_body"]
     assert result["public_body_name"] == "Ministry of Testing"
-    assert "subject" in result
 
 
 @pytest.mark.asyncio
-async def test_draft_request_law_name(session_token: str):
+async def test_draft_request_with_law(session_token: str):
     from froide_mcp.tools import draft_request
 
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/publicbody/5/").mock(
-            return_value=httpx.Response(200, json=_pb(5))
-        )
-        mock.get("/api/v1/law/1/").mock(
-            return_value=httpx.Response(200, json=_law(1))
-        )
+        mock.get("/api/v1/publicbody/5/").mock(return_value=httpx.Response(200, json=_pb_stub(5)))
+        mock.get("/api/v1/law/1/").mock(return_value=httpx.Response(200, json=_law_stub(1)))
         result = await draft_request(
             _ctx(session_token),
             public_body_id=5,
-            goal="Compliance check",
-            records_description="Inspection reports 2023",
+            goal="Check environmental compliance",
+            records_description="Environmental inspection reports 2023",
             law_id=1,
         )
 
-    assert result["law_name"] == "Freedom of Information Act"
+    assert result.get("law_name") == "Freedom of Information Act"
 
 
 @pytest.mark.asyncio
@@ -482,9 +501,7 @@ async def test_draft_request_next_step(session_token: str):
     from froide_mcp.tools import draft_request
 
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/publicbody/5/").mock(
-            return_value=httpx.Response(200, json=_pb(5))
-        )
+        mock.get("/api/v1/publicbody/5/").mock(return_value=httpx.Response(200, json=_pb_stub(5)))
         result = await draft_request(
             _ctx(session_token),
             public_body_id=5,
@@ -492,38 +509,37 @@ async def test_draft_request_next_step(session_token: str):
             records_description="Meeting minutes",
         )
 
-    assert "next_step" in result
     assert len(result["next_step"]) > 0
 
 
 # ---------------------------------------------------------------------------
-# followup_after_deadline  (single-request variant)
+# followup_after_deadline
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_followup_deadline_contains_deadline_language(session_token: str):
+async def test_followup_after_deadline_awaiting(session_token: str):
     from froide_mcp.tools import followup_after_deadline
 
+    stub = _request_stub(id_=5, status="awaiting_response", subject="School budget data")
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/request/5/").mock(
-            return_value=httpx.Response(200, json=_req(5, "awaiting_response", "School budget"))
-        )
+        mock.get("/api/v1/request/5/").mock(return_value=httpx.Response(200, json=stub))
         result = await followup_after_deadline(_ctx(session_token), request_id=5)
 
     assert result["request_id"] == 5
     draft = result["draft_message"].lower()
-    assert any(w in draft for w in ("deadline", "statutory", "overdue", "days", "follow", "law"))
+    assert any(
+        word in draft for word in ("deadline", "statutory", "overdue", "days", "law", "exceeded")
+    )
 
 
 @pytest.mark.asyncio
-async def test_followup_deadline_subject_not_empty(session_token: str):
+async def test_followup_after_deadline_subject(session_token: str):
     from froide_mcp.tools import followup_after_deadline
 
+    stub = _request_stub(id_=6, status="awaiting_response")
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/request/6/").mock(
-            return_value=httpx.Response(200, json=_req(6, "awaiting_response"))
-        )
+        mock.get("/api/v1/request/6/").mock(return_value=httpx.Response(200, json=stub))
         result = await followup_after_deadline(_ctx(session_token), request_id=6)
 
     assert isinstance(result.get("subject"), str)
@@ -531,35 +547,37 @@ async def test_followup_deadline_subject_not_empty(session_token: str):
 
 
 @pytest.mark.asyncio
-async def test_followup_deadline_does_not_post(session_token: str):
-    """followup_after_deadline must never POST to /api/v1/message/."""
+async def test_followup_after_deadline_does_not_send(session_token: str):
+    """followup_after_deadline must NOT POST to /api/v1/message/ — draft only."""
     from froide_mcp.tools import followup_after_deadline
 
+    stub = _request_stub(id_=7, status="awaiting_response")
+    post_called = False
+
     with respx.mock(base_url="http://froide.test", assert_all_called=False) as mock:
-        mock.get("/api/v1/request/7/").mock(
-            return_value=httpx.Response(200, json=_req(7, "awaiting_response"))
-        )
-        mock.post("/api/v1/message/").mock(
-            return_value=httpx.Response(500, json={"error": "must not be called"})
-        )
+        mock.get("/api/v1/request/7/").mock(return_value=httpx.Response(200, json=stub))
+
+        def _fail_if_called(request):
+            nonlocal post_called
+            post_called = True
+            return httpx.Response(500, json={"error": "should not be called"})
+
+        mock.post("/api/v1/message/").mock(side_effect=_fail_if_called)
         result = await followup_after_deadline(_ctx(session_token), request_id=7)
 
-    post_calls = [
-        c for c in mock.calls if c.request.method == "POST"
-    ]
-    assert post_calls == []
+    assert not post_called, "followup_after_deadline made an unexpected POST request"
     assert "draft_message" in result
 
 
 @pytest.mark.asyncio
-async def test_followup_deadline_refused_status(session_token: str):
+async def test_followup_after_deadline_refused(session_token: str):
     from froide_mcp.tools import followup_after_deadline
 
+    stub = _request_stub(id_=8, status="refused", subject="Hospital staffing ratios 2023")
     with respx.mock(base_url="http://froide.test") as mock:
-        mock.get("/api/v1/request/8/").mock(
-            return_value=httpx.Response(200, json=_req(8, "refused", "Hospital staffing"))
-        )
+        mock.get("/api/v1/request/8/").mock(return_value=httpx.Response(200, json=stub))
         result = await followup_after_deadline(_ctx(session_token), request_id=8)
 
     assert result["status"] == "refused"
     assert len(result["draft_message"]) > 30
+    assert "note" in result

@@ -33,7 +33,6 @@ def _token_from_ctx(ctx: Context) -> str:
         else ""
     )
     if not raw:
-        # Should never reach this branch — middleware guards the /mcp prefix.
         raise PermissionError(
             "Missing X-Froide-Session header. Authenticate via Google SSO at /auth/login."
         )
@@ -162,8 +161,7 @@ def _draft_followup_text(req: dict[str, Any]) -> str:
     if status == "awaiting_response":
         return (
             f"Hello,\n\nI am following up on my request \"{subject}\". "
-            "Could you please let me know the current processing status and when I can expect a response? "
-            "I note that the statutory deadline for responding to this request may have passed or is approaching.\n\n"
+            "Could you please let me know the current processing status and when I can expect a response?\n\n"
             "Best regards"
         )
     if status in {"refused", "not_held"}:
@@ -181,6 +179,26 @@ def _draft_followup_text(req: dict[str, Any]) -> str:
     return (
         f"Hello,\n\nI am writing regarding my request \"{subject}\". "
         "Could you please confirm the current status and any next steps required from my side?\n\n"
+        "Best regards"
+    )
+
+
+def _draft_deadline_followup_text(req: dict[str, Any]) -> str:
+    """Draft text specifically for a statutory-deadline follow-up."""
+    subject = _latest_message_subject(req) or _request_identifier(req)
+    status = _request_status(req)
+    if status in {"refused", "not_held"}:
+        return (
+            f"Hello,\n\nI am following up on my request \"{subject}\" following your response. "
+            "The statutory deadline for a complete response has now passed. "
+            "Could you please confirm whether additional information can be released and clarify the legal basis for any remaining refusal?\n\n"
+            "Best regards"
+        )
+    return (
+        f"Hello,\n\nI am writing to follow up on my request \"{subject}\". "
+        "The statutory response deadline has now been exceeded. "
+        "I would appreciate an update on the processing status and an estimated date for the response. "
+        "If additional time is required by law, please confirm this formally.\n\n"
         "Best regards"
     )
 
@@ -655,7 +673,7 @@ async def draft_request(
         public_body_payload.get("name") or public_body_payload.get("title") or public_body_id
     )
     subject = f"Request for access to {records_description.strip()}"
-    body = (
+    draft_body = (
         f"Hello,\n\n"
         f"I am requesting access to information held by {public_body_name}. "
         f"My goal is: {goal.strip()}.\n\n"
@@ -667,86 +685,44 @@ async def draft_request(
     return {
         "public_body_id": public_body_id,
         "public_body_name": public_body_name,
+        "subject": subject,
+        "draft_body": draft_body,
         "law_id": law_id,
         "law_name": law_payload.get("name") if isinstance(law_payload, dict) else None,
         "public": public,
-        "subject": subject,
-        "draft_body": body,
-        "next_step": "Review the draft and run preflight_request_submission before make_request.",
+        "next_step": "Review the draft, then call preflight_request_submission or make_request directly.",
     }
 
 
 @mcp.tool()
 async def followup_after_deadline(ctx: Context, request_id: int) -> dict[str, Any]:
-    """Draft a deadline-aware follow-up for a single FOI request.
+    """Draft a statutory-deadline follow-up message for a FOI request.
 
-    Fetches the request, then produces a follow-up draft that explicitly
-    references the statutory deadline. This tool does NOT send anything.
-    Use send_followup to dispatch the message after reviewing the draft.
+    Use this when the legal response deadline has passed and the authority has
+    not yet replied (status 'awaiting_response') or when a refusal needs to be
+    challenged after the deadline period.
+
+    This tool does NOT send anything. It returns a ready-to-review draft that
+    can be passed to send_followup once confirmed by the operator.
 
     Args:
-        request_id: ID of the FOI request to follow up on.
+        request_id: ID of the FOI request that has exceeded its deadline.
     """
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
         req = await c.get(f"/api/v1/request/{request_id}/")
-    subject = _latest_message_subject(req) or _request_identifier(req)
-    draft = _draft_followup_text(req)
+    latest_excerpt = _latest_message_text(req)[:280]
+    subject_base = _latest_message_subject(req) or _request_identifier(req)
     return {
         "request_id": req.get("id", request_id),
         "label": _request_identifier(req),
         "status": _request_status(req),
-        "subject": f"Follow-up (deadline): {subject}",
-        "draft_message": draft,
-        "latest_message_excerpt": _latest_message_text(req)[:280],
+        "subject": f"Deadline follow-up: {subject_base}",
+        "draft_message": _draft_deadline_followup_text(req),
+        "latest_message_excerpt": latest_excerpt,
         "why": _derive_next_step(req),
-        "guidance": (
-            "Review this draft, then call send_followup with request_id, subject and message "
-            "to dispatch it. The draft references the statutory deadline."
-        ),
-    }
-
-
-@mcp.tool()
-async def followup_overdue_requests(
-    ctx: Context,
-    query: str | None = None,
-    page: int = 1,
-) -> dict[str, Any]:
-    """Scan all awaiting_response requests and pair each with a deadline follow-up draft.
-
-    Combines triage_my_requests (status=awaiting_response) with
-    draft_followup_for_request for every result. Returns a batch of ready-to-send
-    drafts ordered by priority.
-
-    This tool does NOT send anything. Pass individual items to send_followup.
-
-    Args:
-        query: Optional free-text filter for the request search.
-        page:  Page number (default 1).
-    """
-    triage = await triage_my_requests(
-        ctx, statuses=["awaiting_response"], query=query, page=page
-    )
-    items: list[dict[str, Any]] = []
-    for item in triage["items"]:
-        draft = await draft_followup_for_request(ctx, request_id=item["request_id"])
-        items.append(
-            {
-                "request_id": item["request_id"],
-                "label": item["label"],
-                "status": item["status"],
-                "priority": item["priority"],
-                "next_step": item["next_step"],
-                "draft_subject": draft["subject"],
-                "draft_message": draft["draft_message"],
-            }
-        )
-    return {
-        "count": len(items),
-        "items": items,
-        "guidance": (
-            "These requests are still awaiting a response and are the best candidates "
-            "for deadline-style follow-up. Review each draft and use send_followup to dispatch."
+        "note": (
+            "This draft is for statutory-deadline follow-up only. "
+            "Review before sending via send_followup."
         ),
     }

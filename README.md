@@ -86,6 +86,34 @@ This repo is applied as a **patch on top of a Froide installation** — it does 
 | `list_attachments` | GET | `/api/v1/attachment/?belongs_to={request_id}` |
 | `get_my_profile` | GET | `/api/v1/user/` |
 
+### Orchestration Helpers
+
+Read-only tools that compose existing API calls into higher-level operator
+workflows. They never modify Froide data and require no backend changes.
+
+| Tool | Description |
+|---|---|
+| `triage_my_requests` | Fetches requests across actionable statuses, scores each by urgency and returns a ranked list with a plain-language suggested next step. Accepts optional `statuses` override and free-text `query`. |
+| `find_requests_needing_action` | Focused subset of `triage_my_requests` — returns only requests in urgent statuses or with priority ≥ 80. Use this for a short, immediately actionable list. |
+| `summarize_request_thread` | Compact operator briefing for a single request: message count, attachment count, current priority and suggested next step. |
+| `draft_followup_for_request` | Drafts a follow-up message based on the request's current status and latest thread state. Does not send anything. Pass the result to `send_followup` after review. |
+| `preflight_request_submission` | Validates a prospective request locally before calling `make_request`. Returns blocking issues, warnings and a preview of the resolved public body and law names. |
+| `get_request_analytics` | Computes status counts and priority bands (critical / high / medium / low) from visible requests using only existing API endpoints. No backend aggregation required. |
+| `draft_request` | Drafts a FOI request body from a user goal and a target public body. Does not submit. Designed to feed into `preflight_request_submission`. |
+| `followup_after_deadline` | Finds requests in `awaiting_response` status — the most likely deadline-overdue candidates — and pairs each with a ready-to-use follow-up draft. Does not send anything. |
+
+**Priority scoring** used by `triage_my_requests`, `find_requests_needing_action` and `get_request_analytics`:
+
+| Score | Meaning |
+|---|---|
+| 100 | `requires_user_action`, `awaiting_user_confirmation`, `has_fee` |
+| 90 | `awaiting_classification`, `classification_needed` |
+| 80 | `publicbody_needed`, `awaiting_publicbody_confirmation` |
+| 70 | `awaiting_response` |
+| 50 | General review / unknown status |
+| 30 | `partially_successful`, `successful` |
+| 20 | `refused`, `not_held`, `gone_postal`, `user_withdrew`, `resolved` |
+
 ## Local development
 
 ```bash
@@ -105,3 +133,16 @@ terraform apply
 ```
 
 See [docs/deployment.md](docs/deployment.md) for full setup.
+
+## Changelog
+
+### feature/planned-tools
+
+- Added `triage_my_requests` — prioritised work queue across actionable statuses
+- Added `find_requests_needing_action` — urgent-only subset of triage
+- Added `summarize_request_thread` — compact briefing for a single request
+- Added `draft_followup_for_request` — status-aware follow-up draft generator
+- Added `preflight_request_submission` — local validation before `make_request`
+- Added `get_request_analytics` — status counts and priority bands from existing API
+- Added `draft_request` — goal-driven FOI request body drafter
+- Added `followup_after_deadline` — deadline follow-up queue with ready drafts

@@ -86,6 +86,34 @@ This repo is applied as a **patch on top of a Froide installation** — it does 
 | `list_attachments` | GET | `/api/v1/attachment/?belongs_to={request_id}` |
 | `get_my_profile` | GET | `/api/v1/user/` |
 
+### Orchestration helpers
+
+These tools compose existing API calls into higher-level operator workflows.
+They do **not** modify any Froide data and require no Django/backend changes.
+They are designed to guide work inside the Froide UI rather than replace it.
+
+| Tool | What it does |
+|---|---|
+| `triage_my_requests` | Builds a prioritised work queue across all actionable statuses with a suggested next step per request |
+| `find_requests_needing_action` | Focused subset of the triage queue — only requests that likely need a human decision soon |
+| `summarize_request_thread` | Operator briefing for a single thread: status, message count, attachment count, priority, next step |
+| `draft_followup_for_request` | Drafts a status-aware follow-up message for review before sending via `send_followup` |
+| `preflight_request_submission` | Validates a prospective request before `make_request` — checks fields and surfaces warnings |
+| `get_request_analytics` | Counts by status and priority band across visible requests |
+| `draft_request` | Drafts a FOI request body from a goal and records description for review before submission |
+| `followup_after_deadline` | Drafts a deadline-referencing follow-up for a single request (single-request variant) |
+| `followup_overdue_requests` | Batch variant: scans all `awaiting_response` requests and pairs each with a deadline follow-up draft |
+
+#### Design principle
+
+Orchestration tools are pure compositions of the `/api/v1/` layer. They were first
+prototyped locally as a patch proposal (covering `triage_my_requests`,
+`find_requests_needing_action` and `summarize_request_thread`) when direct GitHub
+access was not available. Once repository access was established the full set of
+tools was implemented and merged directly. The split between *read/triage* tools
+and *draft/preflight* tools reflects the same principle: the MCP server guides
+operators toward informed actions in the Froide UI rather than bypassing it.
+
 ## Local development
 
 ```bash

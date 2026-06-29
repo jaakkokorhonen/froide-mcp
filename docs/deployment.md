@@ -6,12 +6,29 @@
 - GCP project with Secret Manager, Cloud Run, Artifact Registry APIs enabled
 - Terraform state bucket (same as froide-infra or separate)
 
+## Alignment rules
+
+This repository has a few operational invariants that must stay aligned across
+Terraform, runtime code, tests, and docs:
+
+- `MCP_BASE_URL` is a runtime requirement because Google OAuth uses it as the
+  redirect URI base. It must be managed by Terraform, not set manually with
+  `gcloud run services update`, because a later `terraform apply` would remove
+  manually-added env vars from the Cloud Run service.
+- Smoke tests are transport-agnostic production checks. They verify service
+  liveness, auth middleware behaviour, and non-500 failure modes. They do not
+  try to emulate the full MCP transport unless the exact wire protocol is
+  intentionally pinned and tested.
+- `SMOKE_SESSION_TOKEN` is suitable for short-lived post-deploy checks, but not
+  for unattended long-term monitoring because application session tokens expire
+  after 8 hours.
+
 ## 1. Google OAuth2 Client
 
 1. Go to **Google Cloud Console → APIs & Services → Credentials**
 2. Create **OAuth 2.0 Client ID** → Web application
 3. Authorised redirect URIs: `https://froide-mcp-xxxx.run.app/auth/callback`
-   (update after first Terraform deploy — see step 5)
+   (use the same value you set as `mcp_base_url` in Terraform)
 4. Note the **Client ID** and **Client Secret**
 
 ## 2. Froide OAuth2 Application
@@ -43,26 +60,26 @@ openssl rand -hex 32 | tr -d '\n' | gcloud secrets versions add froide-mcp-sessi
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars   # fill in values
+cp terraform.tfvars.example terraform.tfvars   # fill in values, including mcp_base_url
 terraform init
 terraform plan
 terraform apply
 ```
 
-`terraform output mcp_service_url` gives you the Cloud Run URL.
+`terraform output mcp_service_url` gives you the Cloud Run URL. If the first
+deploy created a slightly different URL than the placeholder in `terraform.tfvars`,
+copy the output value into `mcp_base_url` and apply again so Terraform owns the
+final redirect base permanently.
 
-## 5. Set MCP_BASE_URL (chicken-and-egg fix)
+## 5. Update Google redirect URI
 
-After the first deploy, the service URL is known. Set it:
+After the first deploy, compare the actual service URL with `mcp_base_url`.
+If needed, update both:
 
-```bash
-MCP_URL=$(terraform output -raw mcp_service_url)
-gcloud run services update froide-mcp \
-  --set-env-vars MCP_BASE_URL=$MCP_URL \
-  --region $REGION --project $PROJECT
-```
+- `terraform.tfvars` → `mcp_base_url = "https://...run.app"`
+- Google OAuth2 Client redirect URI → `https://...run.app/auth/callback`
 
-Also update the Google OAuth2 Client redirect URI to `$MCP_URL/auth/callback`.
+Then run `terraform apply` again.
 
 ## 6. First login test
 
@@ -95,5 +112,12 @@ curl -H "X-Froide-Session: <token>" $MCP_URL/mcp
 | `GCP_SERVICE_ACCOUNT` | Secret | `deploy.yml` | Service account email for OIDC impersonation |
 | `GCP_REGION` | Variable | `deploy.yml` | GCP region, e.g. `europe-north1` |
 | `GCP_PROJECT_ID` | Variable | `deploy.yml` | GCP project ID |
-| `MCP_SERVICE_URL` | Variable | `deploy.yml`, `monitor.yml` | Cloud Run service URL — set after first deploy (`terraform output mcp_service_url`) |
-| `SMOKE_SESSION_TOKEN` | Secret | `deploy.yml`, `monitor.yml` | Long-lived session token for smoke tests — obtain via `/auth/login` and rotate before expiry (8 h TTL) |
+| `MCP_SERVICE_URL` | Variable | `deploy.yml`, `monitor.yml` | Cloud Run service URL |
+| `SMOKE_SESSION_TOKEN` | Secret | `deploy.yml` | Short-lived session token for post-deploy smoke tests |
+
+## Monitoring note
+
+`monitor.yml` should not rely on `SMOKE_SESSION_TOKEN` because session tokens
+expire after 8 hours. For unattended monitoring, prefer checks that do not
+require an end-user session, such as `/healthz`, Cloud Run uptime probes, or a
+future dedicated non-interactive monitoring credential.

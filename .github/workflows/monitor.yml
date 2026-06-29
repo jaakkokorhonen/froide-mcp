@@ -29,7 +29,6 @@ jobs:
         id: smoke
         env:
           SMOKE_TEST_URL: ${{ vars.MCP_SERVICE_URL }}
-          SMOKE_SESSION_TOKEN: ${{ secrets.SMOKE_SESSION_TOKEN }}
         run: |
           pytest tests/test_smoke.py \
             -v \
@@ -58,13 +57,12 @@ jobs:
               '',
               '### What to check',
               '- [ ] `GET /healthz` responds on the Cloud Run service',
+              '- [ ] MCP endpoint mount responds without 5xx errors',
               '- [ ] Froide REST API is reachable from the MCP service',
-              '- [ ] Session token in `SMOKE_SESSION_TOKEN` secret is not expired (8h TTL)',
               '- [ ] Cloud Run service is not scaled to zero with cold-start timeout',
               '- [ ] GCP project quotas / billing alerts',
             ].join('\n');
 
-            // Check if an identical open issue already exists to avoid spam
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,

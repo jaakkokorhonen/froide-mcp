@@ -6,6 +6,14 @@ Runs as a standalone Cloud Run Service alongside a Froide installation. Authenti
 
 All requests to `/mcp/*` require a valid session token obtained via `/auth/login`. No anonymous tool access.
 
+## Operational invariants
+
+A few pieces must stay aligned across code, Terraform, and docs:
+
+- `MCP_BASE_URL` is required at runtime for the Google OAuth callback URI and must be managed by Terraform so later applies do not silently remove it.
+- Smoke tests are intentionally conservative. They check deploy health and auth error handling without pinning FastMCP wire-transport details unless that protocol is explicitly documented and version-locked.
+- End-user session tokens expire after 8 hours, so they are fine for interactive use and short post-deploy checks but not for long-lived unattended monitoring.
+
 ## Architecture
 
 ```

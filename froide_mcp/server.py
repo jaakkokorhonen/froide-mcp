@@ -1,9 +1,17 @@
-"""Main entry point: mounts FastMCP SSE app and Google OAuth2 auth routes."""
+"""Main entry point: mounts FastMCP SSE app and Google OAuth2 auth routes.
+
+All requests to /mcp/* MUST carry a valid X-Froide-Session header obtained
+via the Google SSO flow at /auth/login.  The RequireSessionMiddleware
+enforces this at the Starlette layer so no individual tool needs to worry
+about missing tokens.
+"""
 from __future__ import annotations
 
 import secrets
 import uvicorn
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, JSONResponse
 from starlette.routing import Route
@@ -14,9 +22,48 @@ from froide_mcp.auth import (
     verify_hd,
     get_froide_token,
     create_session_token,
+    decode_session_token,
 )
 from froide_mcp.config import config
 from froide_mcp.tools import mcp  # registers all @mcp.tool() decorators
+
+
+# ── Middleware: enforce Google SSO on every /mcp/* request ────────────────
+
+class RequireSessionMiddleware(BaseHTTPMiddleware):
+    """Block any /mcp/* request that lacks a valid, non-expired session token.
+
+    Returns 401 JSON so MCP clients (Claude, Cursor…) can surface the error
+    cleanly.  Requests to /auth/* and /healthz pass through unconditionally.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        # Auth endpoints and health check are always public
+        if path.startswith("/auth/") or path == "/healthz":
+            return await call_next(request)
+
+        # Everything under /mcp requires a session token
+        if path.startswith("/mcp"):
+            raw = request.headers.get("x-froide-session", "")
+            if not raw:
+                return JSONResponse(
+                    {
+                        "error": "Unauthenticated",
+                        "detail": "Visit /auth/login to authenticate with Google SSO, "
+                                  "then include the returned token as X-Froide-Session header.",
+                    },
+                    status_code=401,
+                )
+            try:
+                decode_session_token(raw)  # raises ValueError on invalid/expired
+            except ValueError as exc:
+                return JSONResponse(
+                    {"error": "Invalid or expired session token", "detail": str(exc)},
+                    status_code=401,
+                )
+
+        return await call_next(request)
 
 
 # ── Auth routes ───────────────────────────────────────────────────────────
@@ -52,10 +99,8 @@ async def callback(request: Request):
     except Exception as e:
         return JSONResponse({"error": f"Auth failed: {e}"}, status_code=500)
 
-    # Return the session token. The MCP client must include it as:
-    # X-Froide-Session: <token>
     return HTMLResponse(
-        f"""<html><body>
+        f"""<!doctype html><html><body>
         <h2>Authenticated ✓</h2>
         <p>Email: {claims['email']}</p>
         <p>Include this header in all MCP requests:</p>
@@ -77,15 +122,14 @@ auth_routes = [
     Route("/healthz", healthz),
 ]
 
-# Mount FastMCP SSE transport at /mcp
 mcp_app = mcp.sse_app()
 
 app = Starlette(
     routes=auth_routes,
-    on_startup=[],
+    middleware=[Middleware(RequireSessionMiddleware)],
 )
 
-# Mount MCP SSE at /mcp
+# Mount FastMCP SSE at /mcp
 app.mount("/mcp", mcp_app)
 
 

@@ -30,3 +30,8 @@ class FroideClient:
         r = await self._http.post(path, json=body)
         r.raise_for_status()
         return r.json()
+
+    async def patch(self, path: str, body: dict) -> dict:
+        r = await self._http.patch(path, json=body)
+        r.raise_for_status()
+        return r.json()

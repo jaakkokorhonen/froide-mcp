@@ -674,10 +674,15 @@ async def draft_request(
     law_id: int | None = None,
     public: bool = True,
 ) -> dict[str, Any]:
-    """Draft a FOI request body from a user goal and the target public body.
+    """Prepare language-neutral drafting context for a new FOI request.
 
-    This tool does not submit anything. It produces a suggested subject and
-    request body that can be reviewed or passed into preflight_request_submission.
+    This tool does not submit anything and does not return hard-coded prose in
+    any specific language. Instead, it returns a structured `draft_context`
+    object that the caller renders into the final request text in the language
+    appropriate for the target authority and request thread.
+
+    Review or render the final request text first, then pass it into
+    preflight_request_submission or make_request.
     """
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
@@ -687,25 +692,48 @@ async def draft_request(
     public_body_name = str(
         public_body_payload.get("name") or public_body_payload.get("title") or public_body_id
     )
-    subject = f"Request for access to {records_description.strip()}"
-    draft_body = (
-        f"Hello,\n\n"
-        f"I am requesting access to information held by {public_body_name}. "
-        f"My goal is: {goal.strip()}.\n\n"
-        f"Please provide access to the following records or information: {records_description.strip()}.\n\n"
-        "If some parts cannot be disclosed, please release the remaining material and explain any redactions or refusals.\n\n"
-        "Please let me know if the request needs to be narrowed or clarified.\n\n"
-        "Best regards"
-    )
-    return {
+    clean_goal = goal.strip()
+    clean_records = records_description.strip()
+    suggested_subject = f"Request for access to {clean_records}"
+    draft_context = {
+        "request_goal": clean_goal,
+        "records_description": clean_records,
         "public_body_id": public_body_id,
         "public_body_name": public_body_name,
-        "subject": subject,
-        "draft_body": draft_body,
         "law_id": law_id,
         "law_name": law_payload.get("name") if isinstance(law_payload, dict) else None,
         "public": public,
-        "next_step": "Review the draft, then call preflight_request_submission or make_request directly.",
+        "disclosure_preferences": {
+            "allow_partial_disclosure": True,
+            "ask_for_redaction_explanations": True,
+            "invite_clarification_if_needed": True,
+        },
+        "drafting_notes": [
+            "Write the request in the language appropriate for the authority and request thread.",
+            "State the access goal clearly and concretely.",
+            "Describe the requested records precisely enough for the authority to identify them.",
+            "Ask for partial disclosure if full disclosure is not possible.",
+            "Ask the authority to explain any redactions, refusals, or legal limitations.",
+            "Invite the authority to request clarification if the scope needs narrowing.",
+        ],
+    }
+    return {
+        "public_body_id": public_body_id,
+        "public_body_name": public_body_name,
+        "law_id": law_id,
+        "law_name": law_payload.get("name") if isinstance(law_payload, dict) else None,
+        "public": public,
+        "suggested_subject": suggested_subject,
+        "draft_context": draft_context,
+        "instructions": (
+            "Compose the request in the language appropriate for the target authority. "
+            "Use draft_context to write the final subject and body, then call "
+            "preflight_request_submission or make_request with the reviewed text."
+        ),
+        "next_step": (
+            "Render or review the final request text, then call "
+            "preflight_request_submission or make_request directly."
+        ),
     }
 
 

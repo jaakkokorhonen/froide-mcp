@@ -4,7 +4,7 @@ All notable changes to froide-mcp are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v0.1.0
+## [v1.0.0] — 2026-06-30
 
 First deployable release. Covers the full path from Cloud Run infra to
 authenticated MCP tool calls via a Froide instance.
@@ -23,7 +23,7 @@ authenticated MCP tool calls via a Froide instance.
 
 #### MCP tools
 - `get_my_profile` — authenticated user profile from Froide
-- `list_my_requests` — paginated list of the user’s FOI requests
+- `list_my_requests` — paginated list of the user's FOI requests
 - `get_request` — full detail for a single request
 - `search_requests` — free-text search across requests
 - `get_public_bodies` — search and browse public bodies
@@ -66,6 +66,8 @@ authenticated MCP tool calls via a Froide instance.
   instructions for `SMOKE_SESSION_TOKEN`
 - `docs/orchestration.md` — all eight orchestration tools documented with
   parameter tables and example return values
+- `docs/release.md` — 11-step release runbook
+- `docs/post_release.md` — post-release checklist and v1.1.0 roadmap
 
 ### Fixed
 
@@ -73,4 +75,4 @@ authenticated MCP tool calls via a Froide instance.
   `nightly.yml`) instead of `SMOKE_TEST_URL`, which was never set — all
   smoke tests were silently skipped on every deploy
 
-[Unreleased]: https://github.com/jaakkokorhonen/froide-mcp/compare/HEAD...HEAD
+[v1.0.0]: https://github.com/jaakkokorhonen/froide-mcp/releases/tag/v1.0.0

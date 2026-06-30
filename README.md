@@ -44,62 +44,137 @@ This repo is applied as a **patch on top of a Froide installation** — it does 
 5. Returns a signed session token (HMAC-SHA256, 8 h TTL)
 6. Include the token as `X-Froide-Session: <token>` in all MCP requests
 
-## Tools exposed
+## Tool naming rules
+
+Tool names intentionally communicate both **shape** and **side effects**:
+
+- `list_*` returns a collection, optionally filtered with query parameters such as `q`, `status`, or `jurisdiction`.
+- `get_*` returns one resource by ID.
+- `draft_*` returns structured drafting context and **never mutates Froide data**.
+- `preflight_*` validates a prospective action and **never mutates Froide data**.
+- `send_*`, `make_*`, and `set_*` **mutate Froide data** and should only be called after explicit user or agent confirmation.
+
+This contract reduces ambiguity for MCP clients about which tools are safe to call speculatively and which have irreversible or externally visible effects.
+
+## Tool contract
 
 ### FOI Requests
 
-| Tool | Method | Froide endpoint |
-|---|---|---|
-| `list_requests` | GET | `/api/v1/request/` |
-| `get_request` | GET | `/api/v1/request/{id}/` |
-| `search_requests` | GET | `/api/v1/request/?q={query}` |
-| `make_request` | POST | `/api/v1/request/` |
-| `send_followup` | POST | `/api/v1/message/` |
-| `set_request_status` | PATCH | `/api/v1/request/{id}/` |
+| Tool | Mutates data | Input | Returns | Typical use |
+|---|---|---|---|---|
+| `list_requests` | No | optional `status`, `q`, `page` | Froide paginated request collection | Browse or search requests by status or keyword |
+| `get_request` | No | `request_id` | One request with thread metadata | Inspect one request before manual action |
+| `make_request` | **Yes** | `public_body_id`, `subject`, `body`, optional `law_id`, `campaign_id`, `public` | Created Froide request object | Submit a new FOI request |
+| `send_followup` | **Yes** | `request_id`, `message`, optional `subject` | Created follow-up message object | Send a reviewed follow-up to an authority |
+| `set_request_status` | **Yes** | `request_id`, `status`, optional `resolution` | Updated request object | Mark request outcome after review |
 
-### Public Bodies & Jurisdictions
+### Public Bodies, Jurisdictions, Campaigns, Laws, Attachments, Profile
 
-| Tool | Method | Froide endpoint |
-|---|---|---|
-| `list_public_bodies` | GET | `/api/v1/publicbody/` |
-| `get_public_body` | GET | `/api/v1/publicbody/{id}/` |
-| `list_jurisdictions` | GET | `/api/v1/jurisdiction/` |
-
-### Campaigns
-
-| Tool | Method | Froide endpoint |
-|---|---|---|
-| `list_campaigns` | GET | `/api/v1/campaign/` |
-| `get_campaign` | GET | `/api/v1/campaign/{id}/` |
-
-### Laws
-
-| Tool | Method | Froide endpoint |
-|---|---|---|
-| `list_laws` | GET | `/api/v1/law/` |
-| `get_law` | GET | `/api/v1/law/{id}/` |
-
-### Attachments & Profile
-
-| Tool | Method | Froide endpoint |
-|---|---|---|
-| `list_attachments` | GET | `/api/v1/attachment/?belongs_to={request_id}` |
-| `get_my_profile` | GET | `/api/v1/user/` |
+| Tool | Mutates data | Input | Returns | Typical use |
+|---|---|---|---|---|
+| `list_public_bodies` | No | optional `q`, `jurisdiction`, `page` | Froide paginated public body collection | Find target authority by name or jurisdiction |
+| `get_public_body` | No | `public_body_id` | One public body | Verify authority identity before drafting |
+| `list_jurisdictions` | No | optional `page` | Froide paginated jurisdiction collection | Discover jurisdiction IDs for filtering |
+| `list_campaigns` | No | optional `page` | Froide paginated campaign collection | Browse campaigns for request association |
+| `get_campaign` | No | `campaign_id` | One campaign | Inspect campaign details |
+| `list_laws` | No | optional `jurisdiction`, `page` | Froide paginated law collection | Find applicable FOI laws |
+| `get_law` | No | `law_id` | One law | Inspect law before request creation |
+| `list_attachments` | No | `request_id` | Froide paginated attachment collection | Review request documents |
+| `get_my_profile` | No | none | Authenticated user profile | Confirm current user identity |
 
 ### Orchestration helpers
 
-These tools compose existing API calls into higher-level workflows. They do **not** modify any Froide data and require no Django/backend changes. Their purpose is to help operators work more efficiently inside the existing Froide UI.
+These tools compose existing API calls into higher-level workflows. They do **not** modify any Froide data unless they explicitly redirect the caller to a mutating tool such as `send_followup` or `make_request`.
 
-| Tool | What it does |
-|---|---|
-| `triage_my_requests` | Builds a prioritised work queue across actionable statuses with a suggested next step per request |
-| `find_requests_needing_action` | Filters the triage queue to only requests that likely need an immediate human decision |
-| `summarize_request_thread` | Returns a compact operator briefing for one request: status, message count, attachment count, priority |
-| `draft_followup_for_request` | Drafts a status-aware follow-up message; does not send anything |
-| `draft_request` | Drafts a FOI request body from a goal and records description; does not submit anything |
-| `preflight_request_submission` | Validates a prospective request (subject, body, public body) before calling `make_request` |
-| `get_request_analytics` | Aggregates visible requests into status counts and priority bands |
-| `followup_after_deadline` | Drafts a statutory-deadline follow-up for a request that has exceeded its legal response period; does not send anything |
+| Tool | Mutates data | Input | Returns | Typical use |
+|---|---|---|---|---|
+| `triage_my_requests` | No | optional `statuses`, `query`, `page` | Ranked work queue with status, priority, rationale, next step | Build an operator worklist |
+| `find_requests_needing_action` | No | optional `query`, `page` | Urgent subset of the triage queue | Identify requests needing a human decision now |
+| `summarize_request_thread` | No | `request_id` | Compact briefing: counts, priority, next step | Orient before opening a request in the Froide UI |
+| `draft_followup_for_request` | No | `request_id` | `suggested_subject`, `draft_context`, instructions | Language-aware follow-up drafting context |
+| `draft_request` | No | `public_body_id`, `goal`, `records_description`, optional `law_id`, `public` | `suggested_subject`, `draft_context`, instructions | Language-aware request drafting context before review |
+| `preflight_request_submission` | No | `public_body_id`, `subject`, `body`, optional `law_id`, `campaign_id`, `public` | Validation issues, warnings, preview | Validate a request before calling `make_request` |
+| `get_request_analytics` | No | optional `statuses`, `page` | Status counts, priority bands, top requests | Lightweight dashboards or summaries |
+| `followup_after_deadline` | No | `request_id` | `suggested_subject`, `draft_context`, instructions | Language-aware deadline follow-up drafting context |
+
+## Drafting model
+
+Drafting tools are **language-aware but language-neutral in implementation**.
+
+They do not return hard-coded prose in any specific language. Instead, they return a structured `draft_context` object that the MCP client, LLM, or human operator renders into the final message text in the language appropriate for the request thread and target authority.
+
+This applies to all three drafting tools:
+
+- `draft_followup_for_request`
+- `followup_after_deadline`
+- `draft_request`
+
+A typical `draft_context` from `draft_request` contains fields such as `request_goal`, `records_description`, `public_body_name`, `law_name`, `disclosure_preferences`, and `drafting_notes`. The caller uses this structured context to compose the final subject line and request body in the correct language.
+
+### Drafting safety contract
+
+`draft_*` tools return context, not final prose. A successful draft result means **no message has been sent and no request has been created**.
+
+Recommended safe flow:
+
+1. Call a `draft_*` tool.
+2. Render or review the final prose in the target language.
+3. Optionally call `preflight_request_submission` for new requests.
+4. Only then call a mutating tool such as `send_followup` or `make_request`.
+
+## Pagination model
+
+Collection tools pass the `page` parameter through to the Froide REST API and return Froide's standard paginated envelope. MCP callers inspect `count`, `next`, and `previous` in the response to decide whether to request the next page.
+
+## Triage configuration
+
+Workflow prioritisation is driven by status-based heuristics: status → priority band and status → next-step text. These rules should be treated as **data**, not hidden business logic.
+
+- Keep the canonical status mappings in one place (dictionary constants or a small YAML/JSON config).
+- Prefer dictionary lookups with a fallback over long `if/elif` chains — this makes operator policy easier to review, test, and evolve without rewriting control flow.
+- Document every workflow status token that influences triage and make it obvious which statuses are considered urgent and why.
+
+## Testing strategy
+
+The most valuable tests protect **decision semantics**, not only HTTP transport. The workflow layer already contains meaningful logic, so tests should cover both layers.
+
+### Unit tests for pure decision logic
+
+These functions are deterministic and should have fast parametrized tests with no network or authentication dependency:
+
+- `_priority_for_request`
+- `_derive_next_step`
+- `_followup_draft_context`
+- `_deadline_followup_draft_context`
+- `_contains_user_action_hint`
+
+Recommended cases:
+
+- Each urgent status maps to the expected priority band.
+- `awaiting_response`, `successful`, `refused`, and unknown statuses produce stable next-step text.
+- Deadline draft context always sets `deadline_exceeded=True`.
+- Free-text hints such as `fee`, `clarif`, `postal`, and `confirmation` behave as intended, including negative phrases such as `no fee`.
+
+### Integration tests with a mocked FroideClient
+
+Mock the Froide API boundary and assert the JSON shape returned by higher-level tools:
+
+- `triage_my_requests`
+- `preflight_request_submission`
+- `draft_followup_for_request`
+- `draft_request`
+- `followup_after_deadline`
+- `get_request_analytics`
+
+Verify:
+
+- Required keys are always present in the response.
+- `draft_context` shape is stable — field names and semantics do not drift silently.
+- Mutating tools are not called by draft or triage helpers.
+- Pagination parameters are forwarded correctly.
+- Edge cases such as empty `results`, missing messages, or absent optional metadata are handled gracefully.
+
+MCP agents depend on field names and response shape; silent schema drift can break agent behaviour even when the underlying Froide API still works correctly.
 
 ## Development history
 

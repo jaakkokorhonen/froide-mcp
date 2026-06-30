@@ -15,13 +15,16 @@ Terraform, runtime code, tests, and docs:
   redirect URI base. It must be managed by Terraform, not set manually with
   `gcloud run services update`, because a later `terraform apply` would remove
   manually-added env vars from the Cloud Run service.
-- Smoke tests are transport-agnostic production checks. They verify service
-  liveness, auth middleware behaviour, and non-500 failure modes. They do not
-  try to emulate the full MCP transport unless the exact wire protocol is
-  intentionally pinned and tested.
-- `SMOKE_SESSION_TOKEN` is suitable for short-lived post-deploy checks, but not
-  for unattended long-term monitoring because application session tokens expire
-  after 8 hours.
+- Smoke tests are functionally meaningful production checks. They verify service
+  liveness, auth middleware behaviour (correct 401 responses), and at least one
+  authenticated read-only end-to-end MCP tool path against the deployed service.
+  They do not pin exact FastMCP wire transport details unless those are
+  intentionally documented and stabilised.
+- `SMOKE_SESSION_TOKEN` is suitable for short-lived post-deploy checks and
+  nightly monitoring, but application session tokens expire after 8 hours. If
+  a nightly run fails due to token expiry rather than an application regression,
+  rotate the secret and re-run. For unattended long-term monitoring a dedicated
+  non-interactive read-only credential would be preferable.
 
 ## Security note: Google ID token verification
 
@@ -100,6 +103,21 @@ open $MCP_URL/auth/login
 curl -H "X-Froide-Session: <token>" $MCP_URL/mcp
 ```
 
+## 7. Post-deploy verification
+
+`deploy.yml` fails the release if the deployed Cloud Run service does not pass
+`tests/test_smoke.py`. The smoke tests verify:
+
+1. **Liveness** — `GET /healthz` returns `{"status": "ok"}`
+2. **Auth middleware** — `GET /mcp` without a session header returns 401 with
+   the expected JSON error structure from `RequireSessionMiddleware`
+3. **Token validation** — an invalid session token returns 401, not 500
+4. **Authenticated E2E path** — a valid `SMOKE_SESSION_TOKEN` can call
+   `get_my_profile` via `tools/call`, proving the full chain works in the
+   deployed environment
+
+Smoke tests intentionally use only read-only, non-mutating tools.
+
 ## MCP client configuration (Claude Desktop)
 
 ```json
@@ -124,11 +142,4 @@ curl -H "X-Froide-Session: <token>" $MCP_URL/mcp
 | `GCP_REGION` | Variable | `deploy.yml` | GCP region, e.g. `europe-north1` |
 | `GCP_PROJECT_ID` | Variable | `deploy.yml` | GCP project ID |
 | `MCP_SERVICE_URL` | Variable | `deploy.yml`, `monitor.yml` | Cloud Run service URL |
-| `SMOKE_SESSION_TOKEN` | Secret | `deploy.yml` | Short-lived session token for post-deploy smoke tests |
-
-## Monitoring note
-
-`monitor.yml` should not rely on `SMOKE_SESSION_TOKEN` because session tokens
-expire after 8 hours. For unattended monitoring, prefer checks that do not
-require an end-user session, such as `/healthz`, Cloud Run uptime probes, or a
-future dedicated non-interactive monitoring credential.
+| `SMOKE_SESSION_TOKEN` | Secret | `deploy.yml`, `monitor.yml` | Short-lived session token for authenticated read-only smoke tests (expires after 8 h) |

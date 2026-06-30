@@ -9,13 +9,13 @@ operator workflows that guide work inside the existing Froide UI.
 
 The orchestration helpers are **read-or-compose, never replace**. They help
 an operator decide *what to do next* in the Froide UI; they do not try to
-duplicate the UI or bypass Django's internal logic.
+duplicate the UI or bypass Django’s internal logic.
 
 ## Tools
 
 ### `triage_my_requests`
 
-Build a prioritised work queue from the user's FOI requests.
+Build a prioritised work queue from the user’s FOI requests.
 
 **What it does:** Queries the Froide API across the most actionable request
 statuses (`requires_user_action`, `has_fee`, `awaiting_classification`, etc.),
@@ -168,7 +168,7 @@ and non-blocking warnings. Does **not** create a request.
 
 ### `get_request_analytics`
 
-Compute status distribution and priority bands across the user's visible requests.
+Compute status distribution and priority bands across the user’s visible requests.
 
 **What it does:** Delegates to `triage_my_requests` and aggregates the results
 into status counts and four priority bands (critical / high / medium / low).

@@ -6,7 +6,7 @@ These checks verify more than simple liveness:
 - with a valid session token, the service can reach Froide and complete at
   least one read-only end-to-end tool path
 
-Skipped automatically unless SMOKE_TEST_URL is set. Tests that require a
+Skipped automatically unless MCP_SERVICE_URL is set. Tests that require a
 session token are skipped unless SMOKE_SESSION_TOKEN is also set.
 """
 
@@ -17,12 +17,12 @@ import os
 import httpx
 import pytest
 
-SMOKE_URL = os.environ.get("SMOKE_TEST_URL", "")
+SMOKE_URL = os.environ.get("MCP_SERVICE_URL", "")
 SMOKE_TOKEN = os.environ.get("SMOKE_SESSION_TOKEN", "")
 
 pytestmark = pytest.mark.skipif(
     not SMOKE_URL,
-    reason="SMOKE_TEST_URL not set",
+    reason="MCP_SERVICE_URL not set",
 )
 
 
@@ -46,7 +46,7 @@ def authenticated_client() -> httpx.Client:
     )
 
 
-# ── Liveness ────────────────────────────────────────────────────────────────
+# ── Liveness ──────────────────────────────────────────────────────────────────────────
 
 
 def test_healthz_responds(anonymous_client: httpx.Client) -> None:
@@ -56,7 +56,7 @@ def test_healthz_responds(anonymous_client: httpx.Client) -> None:
     assert r.json()["status"] == "ok"
 
 
-# ── Auth middleware behaviour ────────────────────────────────────────────────
+# ── Auth middleware behaviour ────────────────────────────────────────────────────
 
 
 def test_mcp_requires_auth_without_session(anonymous_client: httpx.Client) -> None:
@@ -86,7 +86,7 @@ def test_invalid_session_token_rejected() -> None:
     assert "invalid" in error_val or "expired" in error_val
 
 
-# ── Authenticated path ───────────────────────────────────────────────────────
+# ── Authenticated path ───────────────────────────────────────────────────────────────
 
 
 @pytest.mark.skipif(not SMOKE_TOKEN, reason="SMOKE_SESSION_TOKEN not set")

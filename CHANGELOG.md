@@ -1,55 +1,76 @@
 # Changelog
 
 All notable changes to froide-mcp are documented here.
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] — 2026-06-30
+## [Unreleased] — v0.1.0
 
-First stable release. The service is deployed on Google Cloud Run alongside a
-Froide installation and is ready for production use.
+First deployable release. Covers the full path from Cloud Run infra to
+authenticated MCP tool calls via a Froide instance.
 
-### What is included
+### Added
 
-**Core infrastructure**
-- FastMCP 3.x HTTP server mountable behind any ASGI stack
-- `RequireSessionMiddleware` — every `/mcp/*` request requires a valid
-  Google SSO session token; anonymous access is rejected with 401
-- Google OAuth2 SSO login flow (`/auth/login` → `/auth/callback`)
-- HMAC-SHA256 signed session tokens (8 h TTL)
-- Froide OAuth2 `client_credentials` bearer-token exchange
-- Terraform module for Cloud Run, Secret Manager, Artifact Registry, and
-  IAM on GCP
-- CI pipeline: ruff, mypy, pytest (≥ 80 % coverage), Docker build
-- CD pipeline: Cloud Build + Cloud Run deploy with post-deploy smoke tests
-- Nightly monitoring with automatic GitHub Issue alerting on failure
+#### Core server
+- FastMCP 3.x HTTP server with `Streamable HTTP` transport at `/mcp`
+- `RequireSessionMiddleware` — rejects unauthenticated requests with
+  structured `{"error": "Unauthenticated", "detail": "..."}` JSON
+- `/healthz` liveness endpoint
+- `/auth/login` + `/auth/callback` Google OAuth2 flow; session token returned
+  as JSON, accepted on subsequent requests via `X-Froide-Session` header
+- `config.py` — all configuration from environment variables; validated at
+  startup with clear error messages
 
-**Tools exposed (23 total)**
+#### MCP tools
+- `get_my_profile` — authenticated user profile from Froide
+- `list_my_requests` — paginated list of the user’s FOI requests
+- `get_request` — full detail for a single request
+- `search_requests` — free-text search across requests
+- `get_public_bodies` — search and browse public bodies
+- `make_request` — submit a new FOI request
+- `send_followup` — send a follow-up message on an existing request
+- `get_attachment` — fetch an attachment from a request thread
 
-| Category | Tools |
-|---|---|
-| FOI Requests | `list_requests`, `get_request`, `search_requests`, `make_request`, `send_followup`, `set_request_status` |
-| Public Bodies & Jurisdictions | `list_public_bodies`, `get_public_body`, `list_jurisdictions` |
-| Campaigns | `list_campaigns`, `get_campaign` |
-| Laws | `list_laws`, `get_law` |
-| Attachments & Profile | `list_attachments`, `get_my_profile` |
-| Orchestration helpers | `triage_my_requests`, `find_requests_needing_action`, `summarize_request_thread`, `draft_followup_for_request`, `draft_request`, `preflight_request_submission`, `get_request_analytics`, `followup_after_deadline` |
+#### Orchestration tools
+- `triage_my_requests` — priority-scored work queue across all urgent
+  request statuses
+- `find_requests_needing_action` — focused subset of triage (priority ≥ 80)
+- `summarize_request_thread` — operator briefing for a single thread
+- `draft_followup_for_request` — status-aware follow-up draft (does not send)
+- `preflight_request_submission` — validation pass before `make_request`
+- `get_request_analytics` — status distribution and priority bands
+- `draft_request` — FOI request body draft from a plain-language goal
+- `followup_after_deadline` — statutory-deadline follow-up draft
 
-Orchestration helpers are read-or-compose only — they do not modify any Froide
-data and require no Django/backend changes.
+#### Infrastructure (Terraform)
+- Cloud Run v2 service with Secret Manager env injection
+- Artifact Registry repository (`froide` Docker repository)
+- Secret Manager secrets for all five OAuth credentials
+- MCP runtime service account with `roles/run.invoker` on the Froide service
+- `terraform.tfvars.example` with all required variables documented
 
-**Smoke tests**
+#### CI/CD
+- `ci.yml` — ruff lint + format check, mypy, pytest (unit + integration,
+  coverage ≥ 80%), Docker build check
+- `cd.yml` — build → Artifact Registry push → Cloud Run deploy → smoke
+  tests; uses Workload Identity Federation (no long-lived keys)
+- `nightly.yml` — 04:00 UTC smoke run; opens GitHub Issue with pytest output
+  on failure
 
-Post-deploy smoke and nightly monitoring verify four levels:
-1. Service liveness (`/healthz`)
-2. Auth middleware rejects missing session with correct 401 structure
-3. Invalid session token returns 401, not 500
-4. Authenticated `tools/call` → `get_my_profile` proves the full path:
-   Cloud Run → session middleware → token decode → Froide bearer → Froide API
+#### Documentation
+- `README.md` — architecture diagram, quickstart, full tool reference
+- `docs/deployment.md` — end-to-end deploy guide including two-pass Terraform
+- `docs/workload_identity.md` — WIF setup (Terraform + gcloud, reuse from
+  froide-infra)
+- `docs/github_actions_secrets.md` — all six secrets/variables, rotation
+  instructions for `SMOKE_SESSION_TOKEN`
+- `docs/orchestration.md` — all eight orchestration tools documented with
+  parameter tables and example return values
 
-### Known limitations
+### Fixed
 
-- `auth.py` decodes the Google ID token JWT payload without JWKS signature
-  verification. Transport-level trust is high (direct HTTPS POST to
-  `accounts.google.com`), but stricter deployments should add
-  `google-auth` or `PyJWT + GOOGLE_CERTS_URL` verification.
-- `SMOKE_SESSION_TOKEN` expires after 8 hours; nightly monitoring will
-  report failures if the secret is not rotated.
+- `tests/test_smoke.py`: read `MCP_SERVICE_URL` (consistent with `cd.yml` and
+  `nightly.yml`) instead of `SMOKE_TEST_URL`, which was never set — all
+  smoke tests were silently skipped on every deploy
+
+[Unreleased]: https://github.com/jaakkokorhonen/froide-mcp/compare/HEAD...HEAD

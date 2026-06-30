@@ -9,6 +9,7 @@ These checks verify more than simple liveness:
 Skipped automatically unless SMOKE_TEST_URL is set. Tests that require a
 session token are skipped unless SMOKE_SESSION_TOKEN is also set.
 """
+
 from __future__ import annotations
 
 import os

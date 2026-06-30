@@ -18,9 +18,9 @@ A few pieces must stay aligned across code, Terraform, and docs:
 
 ```
 Claude / MCP client
-      │  HTTP + SSE  +  X-Froide-Session header
+      │  Streamable HTTP  +  X-Froide-Session header
       ▼
-froide-mcp  (Cloud Run Service, FastMCP)
+froide-mcp  (Cloud Run Service, FastMCP 3.x)
   └─ RequireSessionMiddleware  ← enforces Google SSO on every /mcp/* request
       │  OAuth2 Bearer token
       ▼

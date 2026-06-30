@@ -5,6 +5,7 @@
 - Froide instance running on Cloud Run (see `jaakkokorhonen/froide-infra`)
 - GCP project with Secret Manager, Cloud Run, Artifact Registry APIs enabled
 - Terraform state bucket (same as froide-infra or separate)
+- Workload Identity Federation configured — see `docs/workload_identity.md`
 
 ## Alignment rules
 
@@ -37,15 +38,26 @@ Terraform, runtime code, tests, and docs:
 > [`google-auth`](https://pypi.org/project/google-auth/) or
 > `PyJWT` + `GOOGLE_CERTS_URL`.
 
-## 1. Google OAuth2 Client
+## 1. Workload Identity Federation
+
+GitHub Actions authenticates to GCP using Workload Identity Federation — no
+long-lived service account keys are stored anywhere. Set this up first.
+
+See **`docs/workload_identity.md`** for the full Terraform and gcloud
+instructions. The setup produces two values needed in step 6:
+
+- `GCP_WORKLOAD_IDENTITY_PROVIDER` — WIF provider resource name
+- `GCP_SERVICE_ACCOUNT` — deploy service account email
+
+## 2. Google OAuth2 Client
 
 1. Go to **Google Cloud Console → APIs & Services → Credentials**
 2. Create **OAuth 2.0 Client ID** → Web application
 3. Authorised redirect URIs: `https://froide-mcp-xxxx.run.app/auth/callback`
-   (use the same value you set as `mcp_base_url` in Terraform)
+   (use the same value you will set as `mcp_base_url` in Terraform)
 4. Note the **Client ID** and **Client Secret**
 
-## 2. Froide OAuth2 Application
+## 3. Froide OAuth2 Application
 
 In Froide Django admin (`/admin/account/application/add/`):
 
@@ -58,7 +70,7 @@ In Froide Django admin (`/admin/account/application/add/`):
 
 Note the **Client ID** and **Client Secret**.
 
-## 3. Populate Secret Manager
+## 4. Populate Secret Manager
 
 ```bash
 export PROJECT=your-gcp-project-id
@@ -70,53 +82,81 @@ echo -n "<froide-client-secret>" | gcloud secrets versions add froide-mcp-froide
 openssl rand -hex 32 | tr -d '\n' | gcloud secrets versions add froide-mcp-session-secret --data-file=- --project=$PROJECT
 ```
 
-## 4. Terraform
+The Secret Manager secrets are created by `terraform/secrets.tf`. Run
+`terraform apply` (step 5) before populating them if you have not already.
+
+## 5. Terraform
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars   # fill in values, including mcp_base_url
+cp terraform.tfvars.example terraform.tfvars   # fill in values
 terraform init
 terraform plan
 terraform apply
 ```
 
-`terraform output mcp_service_url` gives you the Cloud Run URL. If the first
-deploy created a slightly different URL than the placeholder in `terraform.tfvars`,
-copy the output value into `mcp_base_url` and apply again so Terraform owns the
-final redirect base permanently.
-
-## 5. Update Google redirect URI
-
-After the first deploy, compare the actual service URL with `mcp_base_url`.
-If needed, update both:
-
-- `terraform.tfvars` → `mcp_base_url = "https://...run.app"`
-- Google OAuth2 Client redirect URI → `https://...run.app/auth/callback`
-
-Then run `terraform apply` again.
-
-## 6. First login test
+`terraform output mcp_service_url` gives you the Cloud Run URL. If the URL
+differs from the placeholder in `terraform.tfvars`, copy the output value
+into `mcp_base_url` and apply again so Terraform owns the redirect base
+permanently:
 
 ```bash
-open $MCP_URL/auth/login
-# Complete Google SSO, copy the X-Froide-Session token
-curl -H "X-Froide-Session: <token>" $MCP_URL/mcp
+# terraform.tfvars
+mcp_base_url = "https://froide-mcp-xxxx.run.app"   # <- update to actual URL
 ```
 
-## 7. Post-deploy verification
+```bash
+terraform apply   # re-apply to push the corrected MCP_BASE_URL env var
+```
 
-`deploy.yml` fails the release if the deployed Cloud Run service does not pass
-`tests/test_smoke.py`. The smoke tests verify:
+## 6. GitHub Actions secrets and variables
 
-1. **Liveness** — `GET /healthz` returns `{"status": "ok"}`
-2. **Auth middleware** — `GET /mcp` without a session header returns 401 with
-   the expected JSON error structure from `RequireSessionMiddleware`
-3. **Token validation** — an invalid session token returns 401, not 500
-4. **Authenticated E2E path** — a valid `SMOKE_SESSION_TOKEN` can call
-   `get_my_profile` via `tools/call`, proving the full chain works in the
-   deployed environment
+Set the six values listed in **`docs/github_actions_secrets.md`**. The
+deploy pipeline (`cd.yml`) and nightly monitoring (`nightly.yml`) both read
+from these.
 
-Smoke tests intentionally use only read-only, non-mutating tools.
+Quick reference:
+
+| Name | Kind | Value |
+|---|---|---|
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Secret | From WIF setup (step 1) |
+| `GCP_SERVICE_ACCOUNT` | Secret | From WIF setup (step 1) |
+| `SMOKE_SESSION_TOKEN` | Secret | From `/auth/login` — see step 7 |
+| `GCP_REGION` | Variable | e.g. `europe-north1` |
+| `GCP_PROJECT_ID` | Variable | GCP project ID |
+| `MCP_SERVICE_URL` | Variable | Cloud Run URL from step 5 |
+
+## 7. First login and smoke token
+
+```bash
+# Open in browser — complete Google SSO
+open https://froide-mcp-xxxx.run.app/auth/login
+# Copy the session_token from the JSON response
+
+# Quick manual check
+curl -H "X-Froide-Session: <token>" https://froide-mcp-xxxx.run.app/healthz
+```
+
+Set the token as `SMOKE_SESSION_TOKEN` in GitHub Actions secrets. It expires
+after 8 hours — see `docs/github_actions_secrets.md` for rotation
+instructions.
+
+## 8. CD pipeline
+
+Pushing to `main` or tagging `v*` triggers `cd.yml`:
+
+```
+Build image → Push to Artifact Registry → gcloud run services update → pytest test_smoke.py
+```
+
+The deploy step fails and rolls back if smoke tests do not pass. Manual
+trigger is also available via **Actions → Deploy → Run workflow**.
+
+## 9. Nightly monitoring
+
+`nightly.yml` runs smoke tests every night at 04:00 UTC (07:00 EEST). On
+failure it opens a GitHub Issue with the pytest output and a note about
+`SMOKE_SESSION_TOKEN` rotation.
 
 ## MCP client configuration (Claude Desktop)
 
@@ -133,13 +173,5 @@ Smoke tests intentionally use only read-only, non-mutating tools.
 }
 ```
 
-## GitHub Actions secrets required
-
-| Name | Type | Used by | Notes |
-|---|---|---|---|
-| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Secret | `deploy.yml` | Workload Identity Federation provider resource name |
-| `GCP_SERVICE_ACCOUNT` | Secret | `deploy.yml` | Service account email for OIDC impersonation |
-| `GCP_REGION` | Variable | `deploy.yml` | GCP region, e.g. `europe-north1` |
-| `GCP_PROJECT_ID` | Variable | `deploy.yml` | GCP project ID |
-| `MCP_SERVICE_URL` | Variable | `deploy.yml`, `monitor.yml` | Cloud Run service URL |
-| `SMOKE_SESSION_TOKEN` | Secret | `deploy.yml`, `monitor.yml` | Short-lived session token for authenticated read-only smoke tests (expires after 8 h) |
+Replace `xxxx` with your actual Cloud Run URL and `<your-session-token>` with
+a token obtained from `/auth/login`.

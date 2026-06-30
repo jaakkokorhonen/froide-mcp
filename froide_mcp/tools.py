@@ -3,6 +3,15 @@
 All tools require a valid Google-SSO session (enforced by RequireSessionMiddleware
 in server.py).  Individual tools call _token_from_ctx() to extract the Froide
 bearer token from the already-validated session.
+
+# Pagination note
+# ─────────────────────────────────────────────────────────────────────────────
+# List tools pass the `page` parameter straight through to the Froide REST API.
+# Callers do NOT need to implement their own pagination loop: the MCP server
+# exposes each page as a separate tool call result, and the agent/operator can
+# request the next page by incrementing `page`.  Froide's standard envelope
+# ({count, next, previous, results}) is returned as-is so the caller always
+# knows how many items exist in total and whether a next page exists.
 """
 from __future__ import annotations
 
@@ -155,52 +164,45 @@ def _latest_message_subject(req: dict[str, Any]) -> str:
     return str(latest.get("subject") or req.get("subject") or req.get("title") or "").strip()
 
 
-def _draft_followup_text(req: dict[str, Any]) -> str:
-    status = _request_status(req)
-    subject = _latest_message_subject(req) or _request_identifier(req)
-    if status == "awaiting_response":
-        return (
-            f"Hello,\n\nI am following up on my request \"{subject}\". "
-            "Could you please let me know the current processing status and when I can expect a response?\n\n"
-            "Best regards"
-        )
-    if status in {"refused", "not_held"}:
-        return (
-            f"Hello,\n\nThank you for your response regarding \"{subject}\". "
-            "Could you please clarify the legal and factual basis for this outcome and confirm whether any partial disclosure is possible?\n\n"
-            "Best regards"
-        )
-    if status in {"publicbody_needed", "awaiting_publicbody_confirmation"}:
-        return (
-            f"Hello,\n\nI would like to confirm the competent authority for \"{subject}\". "
-            "If this office is not responsible, please indicate which public body should receive the request.\n\n"
-            "Best regards"
-        )
-    return (
-        f"Hello,\n\nI am writing regarding my request \"{subject}\". "
-        "Could you please confirm the current status and any next steps required from my side?\n\n"
-        "Best regards"
-    )
+def _followup_draft_context(req: dict[str, Any]) -> dict[str, Any]:
+    """Return a language-neutral context dict for drafting a follow-up message.
+
+    Intentionally does NOT produce rendered prose in any specific language.
+    The caller (LLM or operator) is responsible for composing the final message
+    from this context in whichever language is appropriate for the request.
+
+    Keys
+    ----
+    situation   : machine-readable token describing the current state
+    subject     : subject line of the latest message (or request title)
+    request_id  : Froide request ID
+    label       : human-readable request identifier
+    public_body : name of the target authority, if available
+    latest_message_excerpt : first 280 chars of the latest thread message
+    """
+    return {
+        "situation": _request_status(req),
+        "subject": _latest_message_subject(req) or _request_identifier(req),
+        "request_id": req.get("id"),
+        "label": _request_identifier(req),
+        "public_body": (
+            req.get("public_body", {}).get("name")
+            if isinstance(req.get("public_body"), dict)
+            else None
+        ),
+        "latest_message_excerpt": _latest_message_text(req)[:280],
+    }
 
 
-def _draft_deadline_followup_text(req: dict[str, Any]) -> str:
-    """Draft text specifically for a statutory-deadline follow-up."""
-    subject = _latest_message_subject(req) or _request_identifier(req)
-    status = _request_status(req)
-    if status in {"refused", "not_held"}:
-        return (
-            f"Hello,\n\nI am following up on my request \"{subject}\" following your response. "
-            "The statutory deadline for a complete response has now passed. "
-            "Could you please confirm whether additional information can be released and clarify the legal basis for any remaining refusal?\n\n"
-            "Best regards"
-        )
-    return (
-        f"Hello,\n\nI am writing to follow up on my request \"{subject}\". "
-        "The statutory response deadline has now been exceeded. "
-        "I would appreciate an update on the processing status and an estimated date for the response. "
-        "If additional time is required by law, please confirm this formally.\n\n"
-        "Best regards"
-    )
+def _deadline_followup_draft_context(req: dict[str, Any]) -> dict[str, Any]:
+    """Return a language-neutral context dict for a statutory-deadline follow-up.
+
+    Extends _followup_draft_context with a `deadline_exceeded` flag so the
+    caller knows to frame the message around the missed statutory deadline.
+    """
+    ctx = _followup_draft_context(req)
+    ctx["deadline_exceeded"] = True
+    return ctx
 
 
 def _summarize_request(req: dict[str, Any]) -> dict[str, Any]:
@@ -225,16 +227,27 @@ async def list_requests(
     q: str | None = None,
     page: int = 1,
 ) -> dict[str, Any]:
-    """List FOI requests. Filter by status (e.g. 'awaiting_response', 'successful') or search query.
+    """List FOI requests, optionally filtered by status and/or a free-text search query.
 
-    status options: awaiting_user_confirmation, publicbody_needed, awaiting_publicbody_confirmation,
-    awaiting_response, awaiting_classification, classification_needed, has_fee, refused,
-    partially_successful, successful, not_held, gone_postal, user_withdrew_costs,
-    user_withdrew, resolved, requires_user_action.
+    This is the single entry point for both listing and searching requests.
+    Pass `q` for full-text search, `status` to filter by workflow state, or
+    combine both.  The raw Froide envelope ({count, next, previous, results})
+    is returned so the caller always knows the total count and whether a next
+    page exists — increment `page` to fetch it.
+
+    status options: awaiting_user_confirmation, publicbody_needed,
+    awaiting_publicbody_confirmation, awaiting_response,
+    awaiting_classification, classification_needed, has_fee, refused,
+    partially_successful, successful, not_held, gone_postal,
+    user_withdrew_costs, user_withdrew, resolved, requires_user_action.
     """
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
         return await c.get("/api/v1/request/", status=status, q=q, page=page)
+
+
+# search_requests was removed: it was an exact duplicate of list_requests(q=...).
+# Use list_requests(q="your search terms") instead.
 
 
 @mcp.tool()
@@ -243,14 +256,6 @@ async def get_request(ctx: Context, request_id: int) -> dict[str, Any]:
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
         return await c.get(f"/api/v1/request/{request_id}/")
-
-
-@mcp.tool()
-async def search_requests(ctx: Context, q: str, page: int = 1) -> dict[str, Any]:
-    """Full-text search across FOI requests."""
-    token = _token_from_ctx(ctx)
-    async with FroideClient(token) as c:
-        return await c.get("/api/v1/request/", q=q, page=page)
 
 
 @mcp.tool()
@@ -281,9 +286,9 @@ async def make_request(
         "body": body,
         "public": public,
     }
-    if law_id:
+    if law_id is not None:
         payload["law"] = law_id
-    if campaign_id:
+    if campaign_id is not None:
         payload["campaign"] = campaign_id
     async with FroideClient(token) as c:
         return await c.post("/api/v1/request/", payload)
@@ -543,22 +548,32 @@ async def summarize_request_thread(ctx: Context, request_id: int) -> dict[str, A
 async def draft_followup_for_request(ctx: Context, request_id: int) -> dict[str, Any]:
     """Draft a follow-up message based on a request's current status and latest thread state.
 
-    This tool does not send anything. It returns a subject suggestion, a draft
-    body and the reasoning behind the draft so an operator can review it before
-    using send_followup.
+    This tool does not send anything.  It returns a structured `draft_context`
+    dict with all the information needed to compose the final message text.
+    The caller (LLM or operator) is responsible for rendering the prose in the
+    language appropriate for the request — no English template is imposed.
+
+    Use the returned `draft_context` to write the message, then pass the
+    finished text to send_followup.
     """
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
         req = await c.get(f"/api/v1/request/{request_id}/")
-    latest_excerpt = _latest_message_text(req)[:280]
     return {
         "request_id": req.get("id", request_id),
         "label": _request_identifier(req),
         "status": _request_status(req),
-        "subject": _latest_message_subject(req) or f"Follow-up on {_request_identifier(req)}",
-        "draft_message": _draft_followup_text(req),
-        "latest_message_excerpt": latest_excerpt,
+        "suggested_subject": (
+            _latest_message_subject(req) or f"Follow-up on {_request_identifier(req)}"
+        ),
+        "draft_context": _followup_draft_context(req),
         "why": _derive_next_step(req),
+        "instructions": (
+            "Compose the follow-up message in the language used in the request thread. "
+            "Use draft_context.situation to pick the appropriate framing "
+            "(e.g. status check, refusal challenge, public-body confirmation). "
+            "Then call send_followup with the finished text."
+        ),
     }
 
 
@@ -599,8 +614,8 @@ async def preflight_request_submission(
 
     async with FroideClient(token) as c:
         public_body = await c.get(f"/api/v1/publicbody/{public_body_id}/")
-        law = await c.get(f"/api/v1/law/{law_id}/") if law_id else None
-        campaign = await c.get(f"/api/v1/campaign/{campaign_id}/") if campaign_id else None
+        law = await c.get(f"/api/v1/law/{law_id}/") if law_id is not None else None
+        campaign = await c.get(f"/api/v1/campaign/{campaign_id}/") if campaign_id is not None else None
 
     return {
         "ok": not issues,
@@ -667,7 +682,7 @@ async def draft_request(
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
         public_body_payload = await c.get(f"/api/v1/publicbody/{public_body_id}/")
-        law_payload = await c.get(f"/api/v1/law/{law_id}/") if law_id else None
+        law_payload = await c.get(f"/api/v1/law/{law_id}/") if law_id is not None else None
 
     public_body_name = str(
         public_body_payload.get("name") or public_body_payload.get("title") or public_body_id
@@ -702,8 +717,13 @@ async def followup_after_deadline(ctx: Context, request_id: int) -> dict[str, An
     not yet replied (status 'awaiting_response') or when a refusal needs to be
     challenged after the deadline period.
 
-    This tool does NOT send anything. It returns a ready-to-review draft that
-    can be passed to send_followup once confirmed by the operator.
+    This tool does NOT send anything.  It returns a structured `draft_context`
+    dict with all the information needed to compose the final message text.
+    The caller (LLM or operator) is responsible for rendering the prose in the
+    language appropriate for the request — no English template is imposed.
+
+    Use the returned `draft_context` (note: deadline_exceeded=True) to write
+    the message, then pass the finished text to send_followup.
 
     Args:
         request_id: ID of the FOI request that has exceeded its deadline.
@@ -711,16 +731,19 @@ async def followup_after_deadline(ctx: Context, request_id: int) -> dict[str, An
     token = _token_from_ctx(ctx)
     async with FroideClient(token) as c:
         req = await c.get(f"/api/v1/request/{request_id}/")
-    latest_excerpt = _latest_message_text(req)[:280]
     subject_base = _latest_message_subject(req) or _request_identifier(req)
     return {
         "request_id": req.get("id", request_id),
         "label": _request_identifier(req),
         "status": _request_status(req),
-        "subject": f"Deadline follow-up: {subject_base}",
-        "draft_message": _draft_deadline_followup_text(req),
-        "latest_message_excerpt": latest_excerpt,
+        "suggested_subject": f"Deadline follow-up: {subject_base}",
+        "draft_context": _deadline_followup_draft_context(req),
         "why": _derive_next_step(req),
+        "instructions": (
+            "Compose the follow-up message in the language used in the request thread. "
+            "draft_context.deadline_exceeded is True — frame the message around the "
+            "missed statutory deadline. Then call send_followup with the finished text."
+        ),
         "note": (
             "This draft is for statutory-deadline follow-up only. "
             "Review before sending via send_followup."

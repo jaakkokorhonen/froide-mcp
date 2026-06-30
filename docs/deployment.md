@@ -23,6 +23,17 @@ Terraform, runtime code, tests, and docs:
   for unattended long-term monitoring because application session tokens expire
   after 8 hours.
 
+## Security note: Google ID token verification
+
+> **Known limitation:** `auth.py` decodes the Google ID token JWT payload
+> without verifying the JWKS signature from `accounts.google.com`. The token
+> is received over a direct server-to-server HTTPS POST to Google's token
+> endpoint, so the transport-level trust is high in practice. However, for
+> stricter production hardening, replace the manual base64 decode in
+> `exchange_google_code()` with a proper JWKS verification using
+> [`google-auth`](https://pypi.org/project/google-auth/) or
+> `PyJWT` + `GOOGLE_CERTS_URL`.
+
 ## 1. Google OAuth2 Client
 
 1. Go to **Google Cloud Console → APIs & Services → Credentials**

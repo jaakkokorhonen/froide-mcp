@@ -29,6 +29,7 @@ jobs:
         id: smoke
         env:
           SMOKE_TEST_URL: ${{ vars.MCP_SERVICE_URL }}
+          SMOKE_SESSION_TOKEN: ${{ secrets.SMOKE_SESSION_TOKEN }}
         run: |
           pytest tests/test_smoke.py \
             -v \
@@ -43,7 +44,7 @@ jobs:
           path: smoke-results.xml
           retention-days: 30
 
-      # ── Auto-open GitHub Issue on failure ──────────────────────────
+      # ── Auto-open GitHub Issue on failure ──────────────────────────────────
       - name: Open alert issue on failure
         if: failure()
         uses: actions/github-script@v7
@@ -57,7 +58,9 @@ jobs:
               '',
               '### What to check',
               '- [ ] `GET /healthz` responds on the Cloud Run service',
-              '- [ ] MCP endpoint mount responds without 5xx errors',
+              '- [ ] `GET /mcp` without session header returns 401 from middleware (not 5xx)',
+              '- [ ] Valid `SMOKE_SESSION_TOKEN` passes auth middleware (token may have expired — rotate if needed)',
+              '- [ ] Authenticated `tools/call` -> `get_my_profile` reaches Froide successfully',
               '- [ ] Froide REST API is reachable from the MCP service',
               '- [ ] Cloud Run service is not scaled to zero with cold-start timeout',
               '- [ ] GCP project quotas / billing alerts',
